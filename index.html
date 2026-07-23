@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ОРБИТАЛЬНЫЙ ГИГАНТ - Космическая Станция</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            overflow: hidden; 
+            background: #000;
+            font-family: 'Courier New', monospace;
+            cursor: none;
+        }
+        #gameCanvas { display: block; }
+        
+        #hud {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 100;
+        }
+        
+        .hud-panel {
+            position: absolute;
+            background: rgba(0, 20, 40, 0.7);
+            border: 1px solid #0ff;
+            color: #0ff;
+            padding: 10px;
+            font-size: 12px;
+            text-shadow: 0 0 10px #0ff;
+        }
+        
+        #topLeft { top: 10px; left: 10px; width: 200px; }
+        #topRight { top: 10px; right: 10px; width: 250px; text-align: right; }
+        #bottomCenter { 
+            bottom: 20px; 
+            left: 50%; 
+            transform: translateX(-50%);
+            width: 400px;
+            text-align: center;
+        }
+        #emergency {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 48px;
+            color: #f00;
+            text-shadow: 0 0 30px #f00;
+            animation: emergencyPulse 0.5s infinite;
+            display: none;
+            z-index: 200;
+        }
+        @keyframes emergencyPulse {
+            0%, 100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+            50% { opacity: 0.5; transform: translate(-50%, -50%) scale(1.1); }
+        }
+        
+        #crosshair {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 60px;
+            height: 60px;
+            pointer-events: none;
+            z-index: 150;
+        }
+        #crosshair::before, #crosshair::after {
+            content: '';
+            position: absolute;
+            background: rgba(0, 255, 255, 0.8);
+        }
+        #crosshair::before {
+            width: 2px;
+            height: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        #crosshair::after {
+            width: 100%;
+            height: 2px;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+        
+        .gologram {
+            position: absolute;
+            border: 1px solid rgba(0, 255, 255, 0.5);
+            background: rgba(0, 255, 255, 0.1);
+            animation: holoFlicker 2s infinite;
+        }
+        @keyframes holoFlicker {
+            0%, 100% { opacity: 0.8; }
+            50% { opacity: 0.4; }
+        }
+        
+        #startScreen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(ellipse at center, #1a0a2e 0%, #000 100%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            pointer-events: all;
+        }
+        #startScreen h1 {
+            font-size: 48px;
+            color: #0ff;
+            text-shadow: 0 0 50px #0ff, 0 0 100px #08f;
+            margin-bottom: 20px;
+            animation: titleGlow 2s infinite;
+        }
+        @keyframes titleGlow {
+            0%, 100% { text-shadow: 0 0 50px #0ff; }
+            50% { text-shadow: 0 0 100px #0ff, 0 0 150px #08f; }
+        }
+        #startScreen p {
+            color: #8af;
+            margin: 10px;
+            font-size: 14px;
+        }
+        #startBtn {
+            margin-top: 30px;
+            padding: 15px 40px;
+            font-size: 18px;
+            background: transparent;
+            border: 2px solid #0ff;
+            color: #0ff;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-family: 'Courier New', monospace;
+        }
+        #startBtn:hover {
+            background: #0ff;
+            color: #000;
+            box-shadow: 0 0 30px #0ff;
+        }
+        
+        #levelInfo {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 36px;
+            color: #0f0;
+            text-shadow: 0 0 30px #0f0;
+            display: none;
+            z-index: 200;
+            text-align: center;
+        }
+        
+        #shieldIndicator {
+            position: fixed;
+            bottom: 100px;
+            right: 20px;
+            width: 150px;
+            height: 10px;
+            border: 1px solid #0ff;
+            z-index: 100;
+        }
+        #shieldBar {
+            height: 100%;
+            background: linear-gradient(90deg, #0f0, #ff0, #f00);
+            transition: width 0.3s;
+        }
+        
+        .scanline {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: repeating-linear-gradient(
+                0deg,
+                rgba(0, 0, 0, 0.1) 0px,
+                rgba(0, 0, 0, 0.1) 1px,
+                transparent 1px,
+                transparent 2px
+            );
+            pointer-events: none;
+            z-index: 50;
+        }
+    </style>
+</head>
+<body>
+    <div id="startScreen">
+        <h1>ОРБИТАЛЬНЫЙ ГИГАНТ</h1>
+        <p>КОСМИЧЕСКАЯ СТАНЦИЯ - ПОСАДКА И РАЗГРУЗКА</p>
+        <p>WASD - движение | ПРОБЕЛ - тяга | E - щит | R - авария | CLICK - взаимодействие</p>
+        <button id="startBtn">НАЧАТЬ МИССИЮ</button>
+    </div>
+    
+    <div id="hud">
+        <div class="hud-panel" id="topLeft">
+            <div>УРОВЕНЬ: <span id="level">1</span></div>
+            <div>ОЧКИ: <span id="score">0</span></div>
+            <div>ТАЙМЕР: <span id="timer">60</span>с</div>
+        </div>
+        <div class="hud-panel" id="topRight">
+            <div>СТАТУС: <span id="status">НОРМА</span></div>
+            <div>СКОРОСТЬ: <span id="speed">0</span> м/с</div>
+            <div>ВЫСОТА: <span id="altitude">500</span>м</div>
+        </div>
+        <div class="hud-panel" id="bottomCenter">
+            <div>ТОПЛИВО: <span id="fuel">100</span>% | ДАВЛЕНИЕ: <span id="pressure">100</span>%</div>
+        </div>
+    </div>
+    
+    <div id="crosshair"></div>
+    <div id="emergency">EMERGENCY</div>
+    <div id="levelInfo"></div>
+    
+    <div class="scanline"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="game.js"></script>
+</body>
+</html>
