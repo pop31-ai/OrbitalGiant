@@ -29,6 +29,12 @@ let magneticBeam = null;
 let landingBeacon = null;
 let landingImage = null;
 
+// Физика столкновений
+let collisionBodies = [];
+let playerVelocity = new THREE.Vector3(0, 0, 0);
+const friction = 0.98;
+const bounce = 0.5;
+
 const keys = {};
 const mouse = { x: 0, y: 0 };
 
@@ -265,6 +271,11 @@ function createPlayer() {
     
     player.position.set(0, 100, 200);
     scene.add(player);
+    
+    // Создаём тело столкновения для игрока
+    player.userData.collisionBody = createCollisionBody(player, 'sphere', 15);
+    player.userData.collisionBody.mass = 5;
+    player.userData.collisionBody.velocity = playerVelocity;
 }
 
 // Создание уровня
@@ -371,9 +382,26 @@ function createStation(config) {
     }
     
     station.position.set(0, 0, -300);
-    station.userData = { config: config };
+    station.userData = { config: config, collisionBodies: [] };
     scene.add(station);
     stations.push(station);
+    
+    // Добавляем тела столкновения для станции
+    const coreBody = createCollisionBody(core, 'box', 0, new THREE.Vector3(30, 30, 50));
+    coreBody.isStatic = true;
+    coreBody.mass = 1000;
+    station.userData.collisionBodies.push(coreBody);
+    
+    // Модули
+    station.children.forEach(child => {
+        if (child.geometry && child.geometry.type === 'BoxGeometry') {
+            const size = child.geometry.parameters;
+            const body = createCollisionBody(child, 'box', 0, new THREE.Vector3(size.width/2, size.height/2, size.depth/2));
+            body.isStatic = true;
+            body.mass = 500;
+            station.userData.collisionBodies.push(body);
+        }
+    });
     
     return station;
 }
@@ -677,11 +705,19 @@ function createEmergencyObject() {
             Math.random() * 0.05,
             Math.random() * 0.05,
             Math.random() * 0.05
-        )
+        ),
+        radius: 10 + Math.random() * 10
     };
     
     scene.add(obj);
     emergencyObjects.push(obj);
+    
+    // Регистрируем как тело столкновения
+    const body = createCollisionBody(obj, 'sphere', obj.userData.radius);
+    body.velocity.copy(obj.userData.velocity);
+    body.mass = 2;
+    obj.userData.collisionBody = body;
+}
 }
 
 // Взрыв
@@ -725,6 +761,220 @@ function createHUD() {
     shieldDiv.id = 'shieldIndicator';
     shieldDiv.innerHTML = '<div id="shieldBar"></div>';
     document.body.appendChild(shieldDiv);
+}
+
+// ===== ФИЗИКА СТОЛКНОВЕНИЙ =====
+
+// Создание тела столкновения (сфера или бокс)
+function createCollisionBody(mesh, type = 'sphere', radius = 10, halfExtents = null) {
+    const body = {
+        mesh: mesh,
+        type: type,
+        radius: radius,
+        halfExtents: halfExtents || new THREE.Vector3(10, 10, 10),
+        velocity: new THREE.Vector3(0, 0, 0),
+        mass: 1,
+        isStatic: false
+    };
+    collisionBodies.push(body);
+    return body;
+}
+
+// Получить центр тела в мировых координатах
+function getBodyCenter(body) {
+    const center = new THREE.Vector3();
+    body.mesh.getWorldPosition(center);
+    return center;
+}
+
+// Сфера-сфера: проверка столкновения
+function sphereVsSphere(a, b) {
+    const centerA = getBodyCenter(a);
+    const centerB = getBodyCenter(b);
+    const dist = centerA.distanceTo(centerB);
+    const minDist = a.radius + b.radius;
+    
+    if (dist < minDist) {
+        // Есть столкновение - находим точку контакта
+        const normal = centerB.clone().sub(centerA).normalize();
+        const contactPoint = centerA.clone().add(normal.clone().multiplyScalar(a.radius));
+        const penetration = minDist - dist;
+        
+        return {
+            collided: true,
+            normal: normal,
+            point: contactPoint,
+            penetration: penetration
+        };
+    }
+    return { collided: false };
+}
+
+// Сфера-бокс: проекция центра сферы на бокс
+function sphereVsBox(sphere, box) {
+    const sphereCenter = getBodyCenter(sphere);
+    const boxCenter = getBodyCenter(box);
+    
+    // Преобразуем центр сферы в локальные координаты бокса
+    const localSphere = sphereCenter.clone().sub(boxCenter);
+    
+    // Учитываем поворот бокса (упрощённо - берём касательную)
+    const boxRotation = new THREE.Quaternion();
+    box.mesh.getWorldQuaternion(boxRotation);
+    const invRotation = boxRotation.clone().invert();
+    localSphere.applyQuaternion(invRotation);
+    
+    // Ближайшая точка на боксе к центру сферы
+    const he = box.halfExtents;
+    const closest = new THREE.Vector3(
+        Math.max(-he.x, Math.min(he.x, localSphere.x)),
+        Math.max(-he.y, Math.min(he.y, localSphere.y)),
+        Math.max(-he.z, Math.min(he.z, localSphere.z))
+    );
+    
+    // Расстояние от центра сферы до ближайшей точки
+    const diff = localSphere.clone().sub(closest);
+    const dist = diff.length();
+    
+    if (dist < sphere.radius) {
+        // Нормаль в локальных координатах
+        const localNormal = dist > 0.001 ? diff.normalize() : new THREE.Vector3(0, 1, 0);
+        
+        // Преобразуем нормаль обратно в мировые координаты
+        const worldNormal = localNormal.clone().applyQuaternion(boxRotation);
+        
+        // Точка контакта в мировых координатах
+        const contactLocal = closest.clone().applyQuaternion(boxRotation).add(boxCenter);
+        
+        return {
+            collided: true,
+            normal: worldNormal,
+            point: contactLocal,
+            penetration: sphere.radius - dist
+        };
+    }
+    return { collided: false };
+}
+
+// Бокс-бокс (упрощённый SAT)
+function boxVsBox(a, b) {
+    const centerA = getBodyCenter(a);
+    const centerB = getBodyCenter(b);
+    
+    // Разделяющая ось (упрощённо - только AABB)
+    const heA = a.halfExtents;
+    const heB = b.halfExtents;
+    
+    const dx = centerB.x - centerA.x;
+    const dy = centerB.y - centerA.y;
+    const dz = centerB.z - centerA.z;
+    
+    const overlapX = (heA.x + heB.x) - Math.abs(dx);
+    const overlapY = (heA.y + heB.y) - Math.abs(dy);
+    const overlapZ = (heA.z + heB.z) - Math.abs(dz);
+    
+    if (overlapX > 0 && overlapY > 0 && overlapZ > 0) {
+        // Есть столкновение - выбираем наименьшее проникновение
+        let normal, penetration;
+        
+        if (overlapX < overlapY && overlapX < overlapZ) {
+            normal = new THREE.Vector3(dx > 0 ? 1 : -1, 0, 0);
+            penetration = overlapX;
+        } else if (overlapY < overlapZ) {
+            normal = new THREE.Vector3(0, dy > 0 ? 1 : -1, 0);
+            penetration = overlapY;
+        } else {
+            normal = new THREE.Vector3(0, 0, dz > 0 ? 1 : -1);
+            penetration = overlapZ;
+        }
+        
+        const contactPoint = centerA.clone().add(normal.clone().multiplyScalar(heA.x));
+        
+        return {
+            collided: true,
+            normal: normal,
+            point: contactPoint,
+            penetration: penetration
+        };
+    }
+    return { collided: false };
+}
+
+// Разрешить столкновение (толкание объектов)
+function resolveCollision(a, b, collision) {
+    const { normal, penetration } = collision;
+    
+    // Разделяем объекты
+    const totalMass = a.mass + b.mass;
+    const ratioA = b.mass / totalMass;
+    const ratioB = a.mass / totalMass;
+    
+    if (!a.isStatic) {
+        a.mesh.position.sub(normal.clone().multiplyScalar(penetration * ratioA));
+    }
+    if (!b.isStatic) {
+        b.mesh.position.add(normal.clone().multiplyScalar(penetration * ratioB));
+    }
+    
+    // Отскок (результирующая скорость)
+    const relVel = a.velocity.clone().sub(b.velocity);
+    const velAlongNormal = relVel.dot(normal);
+    
+    if (velAlongNormal > 0) return; // Объекты разлетаются
+    
+    const restitution = bounce;
+    const j = -(1 + restitution) * velAlongNormal / totalMass;
+    
+    const impulse = normal.clone().multiplyScalar(j);
+    
+    if (!a.isStatic) a.velocity.sub(impulse.clone().multiplyScalar(a.mass));
+    if (!b.isStatic) b.velocity.add(impulse.clone().multiplyScalar(b.mass));
+}
+
+// Проверка所有 столкновений
+function checkAllCollisions() {
+    const results = [];
+    
+    for (let i = 0; i < collisionBodies.length; i++) {
+        for (let j = i + 1; j < collisionBodies.length; j++) {
+            const a = collisionBodies[i];
+            const b = collisionBodies[j];
+            
+            let collision = null;
+            
+            // Определяем типы и проверяем
+            if (a.type === 'sphere' && b.type === 'sphere') {
+                collision = sphereVsSphere(a, b);
+            } else if (a.type === 'sphere' && b.type === 'box') {
+                collision = sphereVsBox(a, b);
+            } else if (a.type === 'box' && b.type === 'sphere') {
+                collision = sphereVsBox(b, a);
+                if (collision.collided) collision.normal.negate();
+            } else if (a.type === 'box' && b.type === 'box') {
+                collision = boxVsBox(a, b);
+            }
+            
+            if (collision && collision.collided) {
+                resolveCollision(a, b, collision);
+                results.push({ a, b, collision });
+            }
+        }
+    }
+    
+    return results;
+}
+
+// Применить физику к телам
+function applyPhysics(delta) {
+    collisionBodies.forEach(body => {
+        if (!body.isStatic) {
+            // Применяем скорость
+            body.mesh.position.add(body.velocity.clone().multiplyScalar(delta));
+            
+            // Трение
+            body.velocity.multiplyScalar(friction);
+        }
+    });
 }
 
 // Управление
@@ -1017,10 +1267,22 @@ function updateStatus(text) {
 
 // Очистка уровня
 function clearLevel() {
-    stations.forEach(s => scene.remove(s));
+    stations.forEach(s => {
+        if (s.userData.collisionBodies) {
+            s.userData.collisionBodies.forEach(b => {
+                collisionBodies = collisionBodies.filter(cb => cb !== b);
+            });
+        }
+        scene.remove(s);
+    });
     stations = [];
     
-    emergencyObjects.forEach(o => scene.remove(o));
+    emergencyObjects.forEach(o => {
+        if (o.userData.collisionBody) {
+            collisionBodies = collisionBodies.filter(b => b !== o.userData.collisionBody);
+        }
+        scene.remove(o);
+    });
     emergencyObjects = [];
     
     cranes.forEach(c => scene.remove(c));
@@ -1112,6 +1374,20 @@ function animate() {
         
         // Ограничение высоты
         player.position.y = Math.max(-40, Math.min(300, player.position.y));
+        
+        // Обновляем скорость игрока для физики
+        if (player.userData.collisionBody) {
+            player.userData.collisionBody.velocity.copy(playerVelocity);
+        }
+        
+        // Физика столкновений
+        checkAllCollisions();
+        applyPhysics(delta);
+        
+        // Обновляем позицию игрока из физического тела
+        if (player.userData.collisionBody && !isDocked) {
+            // Игрок управляется напрямую, но учитываем столкновения
+        }
         
         // Пламя двигателя
         const flames = player.children.filter(c => c.name === 'flame');
@@ -1205,18 +1481,30 @@ function animate() {
         
         // Аварийные объекты
         emergencyObjects.forEach(obj => {
-            obj.position.add(obj.userData.velocity);
+            // Обновляем позицию из физического тела
+            if (obj.userData.collisionBody) {
+                obj.position.copy(obj.userData.collisionBody.mesh.position);
+                obj.userData.velocity.copy(obj.userData.collisionBody.velocity);
+            } else {
+                obj.position.add(obj.userData.velocity);
+            }
+            
             obj.rotation.x += obj.userData.rotSpeed.x;
             obj.rotation.y += obj.userData.rotSpeed.y;
             obj.rotation.z += obj.userData.rotSpeed.z;
             
-            // Проверка столкновений
+            // Проверка столкновений с игроком (взаимодействие)
             const distToPlayer = obj.position.distanceTo(player.position);
-            if (distToPlayer < 20) {
+            if (distToPlayer < obj.userData.radius + 15) {
                 if (!shieldActive) {
                     fuel = Math.max(0, fuel - 15);
                     pressure = Math.max(0, pressure - 10);
                     createExplosion(obj.position.clone());
+                    
+                    // Удаляем тело столкновения
+                    if (obj.userData.collisionBody) {
+                        collisionBodies = collisionBodies.filter(b => b !== obj.userData.collisionBody);
+                    }
                     scene.remove(obj);
                     emergencyObjects = emergencyObjects.filter(o => o !== obj);
                 } else {
@@ -1231,6 +1519,9 @@ function animate() {
             
             // Удаление удаленных объектов
             if (obj.position.length() > 1000) {
+                if (obj.userData.collisionBody) {
+                    collisionBodies = collisionBodies.filter(b => b !== obj.userData.collisionBody);
+                }
                 scene.remove(obj);
                 emergencyObjects = emergencyObjects.filter(o => o !== obj);
             }
