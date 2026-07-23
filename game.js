@@ -644,6 +644,15 @@ function createExplosion(position) {
     particles.push(explosion);
 }
 
+// Создание HUD (дополнительные элементы)
+function createHUD() {
+    // Щит индикатор
+    const shieldDiv = document.createElement('div');
+    shieldDiv.id = 'shieldIndicator';
+    shieldDiv.innerHTML = '<div id="shieldBar"></div>';
+    document.body.appendChild(shieldDiv);
+}
+
 // Управление
 function setupControls() {
     document.addEventListener('keydown', (e) => {

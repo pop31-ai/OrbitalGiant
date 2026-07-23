@@ -1,0 +1,9 @@
+{
+  "name": "orbitalgiant",
+  "version": "1.0.0",
+  "description": "3D космическая игра - Орбитальный Гигант",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
