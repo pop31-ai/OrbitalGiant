@@ -762,13 +762,13 @@ function createHUD() {
     document.body.appendChild(shieldDiv);
 }
 
-// ===== ФИЗИКА СТОЛКНОВЕНИЙ (2D-ПРОЕКЦИЯ) =====
+// ===== ФИЗИКА СТОЛКНОВЕНИЙ (СЕЧЕНИЯ ПО ОСИ) =====
 
 /*
-  Упрощение 3D → 2D:
-  Все 3D-фигуры проецируются на плоскость экрана (X,Y) через camera.
-  На проекции проверяются 2D-фигуры: круги и прямоугольники.
-  Глубина (Z) проверяется отдельно — если пересекаются по Z, значит столкновение реально.
+  Каждое тело — вращательно-симметричная фигура.
+  Форма задаётся полиномом r(t), где t — позиция вдоль центральной оси.
+  Столкновение: проекции центров на общую ось, сравнение радиусов сечений.
+  Нет пересечения = нет столкновения. Полиномы не спорят.
 */
 
 function createCollisionBody(mesh, type = 'sphere', radius = 10, halfExtents = null) {
@@ -779,7 +779,11 @@ function createCollisionBody(mesh, type = 'sphere', radius = 10, halfExtents = n
         halfExtents: halfExtents || new THREE.Vector3(10, 10, 10),
         velocity: new THREE.Vector3(0, 0, 0),
         mass: 1,
-        isStatic: false
+        isStatic: false,
+        // Полином сечения: r(t) = c0 + c1*t + c2*t²
+        // Для сферы: r(t) = sqrt(R² - t²), аппроксимация полиномом
+        profile: null,
+        axis: new THREE.Vector3(0, 0, 1) // центральная ось (локальная)
     };
     collisionBodies.push(body);
     return body;
@@ -791,144 +795,145 @@ function getBodyCenter(body) {
     return center;
 }
 
-// === 2D-ПРОЕКЦИЯ ===
+// === ПРОФИЛИ СЕЧЕНИЙ ===
 
-// Проецировать 3D-точку на 2D-экран (NDC)
-function projectToScreen(point3D) {
-    const v = point3D.clone().project(camera);
-    return { x: v.x, y: v.y, z: v.z };
-}
-
-// Расстояние в 2D (плоскость экрана)
-function dist2D(a, b) {
-    const dx = a.x - b.x;
-    const dy = a.y - b.y;
-    return Math.sqrt(dx * dx + dy * dy);
-}
-
-// 2D-круг vs 2D-круг (по проекции экрана)
-function circleVsCircle(a, b) {
-    const posA = getBodyCenter(a);
-    const posB = getBodyCenter(b);
-
-    const screenA = projectToScreen(posA);
-    const screenB = projectToScreen(posB);
-
-    // Радиус на экране (в NDC) — берём max по осям камеры
-    const rA = screenRadius(a, posA);
-    const rB = screenRadius(b, posB);
-
-    const d = dist2D(screenA, screenB);
-
-    // Проверка глубины: пересекаются ли по Z
-    const depthOverlap = Math.abs(posA.z - posB.z) < (a.radius + b.radius) * 1.5;
-
-    if (d < rA + rB && depthOverlap) {
-        // Нормаль в 2D → обратно в 3D
-        const dx = posB.x - posA.x;
-        const dy = posB.y - posA.y;
-        const dz = posB.z - posA.z;
-        const len = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
-        const normal = new THREE.Vector3(dx/len, dy/len, dz/len);
-
-        const penetration = (rA + rB - d) * 200; // масштаб NDC → мир
-        const point = posA.clone().add(normal.clone().multiplyScalar(a.radius));
-
-        return { collided: true, normal, point, penetration };
-    }
-    return { collided: false };
-}
-
-// 2D-круг vs 2D-прямоугольник
-function circleVsRect(circle, rect) {
-    const posC = getBodyCenter(circle);
-    const posR = getBodyCenter(rect);
-
-    const screenC = projectToScreen(posC);
-    const screenR = projectToScreen(posR);
-
-    const rC = screenRadius(circle, posC);
-    const heR = screenHalfExtents(rect, posR);
-
-    // Ближайшая точка на прямоугольнике к центру круга
-    const closestX = Math.max(screenR.x - heR.x, Math.min(screenR.x + heR.x, screenC.x));
-    const closestY = Math.max(screenR.y - heR.y, Math.min(screenR.y + heR.y, screenC.y));
-
-    const dx = screenC.x - closestX;
-    const dy = screenC.y - closestY;
-    const d = Math.sqrt(dx*dx + dy*dy);
-
-    // Глубина
-    const depthOverlap = Math.abs(posC.z - posR.z) < (circle.radius + Math.max(rect.halfExtents.x, rect.halfExtents.y, rect.halfExtents.z)) * 1.5;
-
-    if (d < rC && depthOverlap) {
-        const dx3 = posR.x - posC.x;
-        const dy3 = posR.y - posC.y;
-        const dz3 = posR.z - posC.z;
-        const len = Math.sqrt(dx3*dx3 + dy3*dy3 + dz3*dz3) || 1;
-        const normal = new THREE.Vector3(dx3/len, dy3/len, dz3/len);
-
-        const penetration = (rC - d) * 200;
-        const point = posC.clone().add(normal.clone().multiplyScalar(circle.radius));
-
-        return { collided: true, normal, point, penetration };
-    }
-    return { collided: false };
-}
-
-// 2D-прямоугольник vs 2D-прямоугольник (AABB в проекции)
-function rectVsRect(a, b) {
-    const posA = getBodyCenter(a);
-    const posB = getBodyCenter(b);
-
-    const screenA = projectToScreen(posA);
-    const screenB = projectToScreen(posB);
-
-    const heA = screenHalfExtents(a, posA);
-    const heB = screenHalfExtents(b, posB);
-
-    const overlapX = (heA.x + heB.x) - Math.abs(screenA.x - screenB.x);
-    const overlapY = (heA.y + heB.y) - Math.abs(screenA.y - screenB.y);
-
-    const depthOverlap = Math.abs(posA.z - posB.z) < (a.halfExtents.z + b.halfExtents.z) * 1.5;
-
-    if (overlapX > 0 && overlapY > 0 && depthOverlap) {
-        let nx, ny, pen;
-        if (overlapX < overlapY) {
-            nx = screenB.x > screenA.x ? 1 : -1;
-            ny = 0;
-            pen = overlapX;
-        } else {
-            nx = 0;
-            ny = screenB.y > screenA.y ? 1 : -1;
-            pen = overlapY;
-        }
-
-        const normal = new THREE.Vector3(nx, ny, (posB.z - posA.z) * 0.001).normalize();
-        const penetration = pen * 200;
-        const point = posA.clone().add(normal.clone().multiplyScalar(a.halfExtents.x));
-
-        return { collided: true, normal, point, penetration };
-    }
-    return { collided: false };
-}
-
-// Размер радиуса на экране (в NDC)
-function screenRadius(body, worldPos) {
-    const screen = projectToScreen(worldPos);
-    const offset = projectToScreen(worldPos.clone().add(new THREE.Vector3(body.radius, 0, 0)));
-    return Math.abs(offset.x - screen.x);
-}
-
-// Полуразмеры бокса на экране (в NDC)
-function screenHalfExtents(body, worldPos) {
-    const screen = projectToScreen(worldPos);
-    const sx = projectToScreen(worldPos.clone().add(new THREE.Vector3(body.halfExtents.x, 0, 0)));
-    const sy = projectToScreen(worldPos.clone().add(new THREE.Vector3(0, body.halfExtents.y, 0)));
-    return {
-        x: Math.abs(sx.x - screen.x) || 0.01,
-        y: Math.abs(sy.y - screen.y) || 0.01
+// Профиль сферы: r(t) = sqrt(R² - t²), аппроксимация
+function sphereProfile(R) {
+    // Полином 3-й степени, аппроксимирующий полукруг на [-R, R]
+    // Pade-подобная: r(t) ≈ R * (1 - (t/R)²)^0.5
+    //Taylor: r(t) ≈ R(1 - t²/(2R²) - t⁴/(8R⁴))
+    return function(t) {
+        const x = t / R;
+        if (Math.abs(x) > 1) return 0;
+        return R * Math.sqrt(Math.max(0, 1 - x * x));
     };
+}
+
+// Профиль цилиндра: r(t) = R для |t| < H/2
+function cylinderProfile(R, H) {
+    return function(t) {
+        return Math.abs(t) <= H / 2 ? R : 0;
+    };
+}
+
+// Профиль конуса: r(t) = R * (1 - t/H) для t ∈ [0, H]
+function coneProfile(R, H) {
+    return function(t) {
+        if (t < 0 || t > H) return 0;
+        return R * (1 - t / H);
+    };
+}
+
+// Профиль бокса (как цилиндр): r(t) = max(Rx, Ry) для |t| < Hz
+function boxProfile(halfExtents) {
+    const R = Math.max(halfExtents.x, halfExtents.y);
+    const H = halfExtents.z;
+    return cylinderProfile(R, H * 2);
+}
+
+// Профиль составной: сумма полиномов (для сложных форм)
+function compositeProfile(segments) {
+    // segments: [{tMin, tMax, fn}]
+    return function(t) {
+        for (const seg of segments) {
+            if (t >= seg.tMin && t <= seg.tMax) {
+                return seg.fn(t);
+            }
+        }
+        return 0;
+    };
+}
+
+// === СЕЧЕНИЕ НА ОСИ ===
+
+// Получить мировую ось тела
+function getWorldAxis(body) {
+    const axis = body.axis.clone();
+    const q = new THREE.Quaternion();
+    body.mesh.getWorldQuaternion(q);
+    axis.applyQuaternion(q);
+    return axis;
+}
+
+// Расстояние вдоль оси (проекция разности центров на ось)
+function projectAlongAxis(centerA, centerB, axis) {
+    const d = centerB.clone().sub(centerA);
+    return d.dot(axis);
+}
+
+// Сравнение сечений двух тел вдоль оси
+function compareSlices(bodyA, profileA, bodyB, profileB, axis, t) {
+    const rA = profileA(t);
+    const rB = profileB(t);
+    return { rA, rB, overlap: Math.min(rA, rB) };
+}
+
+// === ГЛАВНАЯ ПРОВЕРКА СТОЛКНОВЕНИЙ ===
+
+function testCollision(a, b) {
+    const centerA = getBodyCenter(a);
+    const centerB = getBodyCenter(b);
+
+    // 1. Сферы-быстрые: отсечение по расстоянию
+    const d3 = centerA.distanceTo(centerB);
+    const maxR = a.radius + b.radius;
+    if (d3 > maxR * 1.5) return { collided: false }; // далеко — не проверяем
+
+    // 2. Ось = от центра A к центру B
+    const axis = centerB.clone().sub(centerA);
+    if (axis.length() < 0.001) return { collided: false };
+    axis.normalize();
+
+    // 3. Проекции центров на ось
+    const projA = 0; // A — начало координат на оси
+    const projB = d3; // B на расстоянии d3
+
+    // 4. Профили сечений
+    const profileA = a.profile || sphereProfile(a.radius);
+    const profileB = b.profile || sphereProfile(b.radius);
+
+    // 5. Сэмплируем вдоль оси — ищем пересечение
+    const tMin = Math.max(projA - a.radius, projB - b.radius);
+    const tMax = Math.min(projA + a.radius, projB + b.radius);
+
+    if (tMin >= tMax) return { collided: false }; // не пересекаются по оси
+
+    let maxOverlap = 0;
+    let overlapT = 0;
+    const steps = 8; // мало — быстро
+
+    for (let i = 0; i <= steps; i++) {
+        const t = tMin + (tMax - tMin) * (i / steps);
+        const rA = profileA(t - projA); // t относительно центра A
+        const rB = profileB(t - projB); // t относительно центра B
+
+        // Суммарный радиус сечения
+        const totalR = rA + rB;
+
+        // Расстояние от оси между центрами до поверхности (перпендикуляр)
+        // = расстояние между центрами проекций на перпендикуляр к оси
+        // Упрощение: в 3D перпендикулярное расстояние = d3_perp
+        const dPerp = d3; // уже на оси, перпендикуляра 0
+
+        if (d3 <= totalR) {
+            const overlap = totalR - d3;
+            if (overlap > maxOverlap) {
+                maxOverlap = overlap;
+                overlapT = t;
+            }
+        }
+    }
+
+    if (maxOverlap > 0.01) {
+        // Нормаль = вдоль оси между центрами
+        const normal = centerB.clone().sub(centerA).normalize();
+        const penetration = maxOverlap;
+        const point = centerA.clone().add(normal.clone().multiplyScalar(a.radius));
+
+        return { collided: true, normal, point, penetration };
+    }
+
+    return { collided: false };
 }
 
 // === РАЗРЕШЕНИЕ СТОЛКНОВЕНИЙ ===
@@ -967,20 +972,9 @@ function checkAllCollisions() {
             const a = collisionBodies[i];
             const b = collisionBodies[j];
 
-            let collision = null;
+            const collision = testCollision(a, b);
 
-            if (a.type === 'sphere' && b.type === 'sphere') {
-                collision = circleVsCircle(a, b);
-            } else if (a.type === 'sphere' && b.type === 'box') {
-                collision = circleVsRect(a, b);
-            } else if (a.type === 'box' && b.type === 'sphere') {
-                collision = circleVsRect(b, a);
-                if (collision.collided) collision.normal.negate();
-            } else if (a.type === 'box' && b.type === 'box') {
-                collision = rectVsRect(a, b);
-            }
-
-            if (collision && collision.collided) {
+            if (collision.collided) {
                 resolveCollision(a, b, collision);
                 results.push({ a, b, collision });
             }
