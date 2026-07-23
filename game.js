@@ -762,9 +762,15 @@ function createHUD() {
     document.body.appendChild(shieldDiv);
 }
 
-// ===== ФИЗИКА СТОЛКНОВЕНИЙ =====
+// ===== ФИЗИКА СТОЛКНОВЕНИЙ (2D-ПРОЕКЦИЯ) =====
 
-// Создание тела столкновения (сфера или бокс)
+/*
+  Упрощение 3D → 2D:
+  Все 3D-фигуры проецируются на плоскость экрана (X,Y) через camera.
+  На проекции проверяются 2D-фигуры: круги и прямоугольники.
+  Глубина (Z) проверяется отдельно — если пересекаются по Z, значит столкновение реально.
+*/
+
 function createCollisionBody(mesh, type = 'sphere', radius = 10, halfExtents = null) {
     const body = {
         mesh: mesh,
@@ -779,198 +785,214 @@ function createCollisionBody(mesh, type = 'sphere', radius = 10, halfExtents = n
     return body;
 }
 
-// Получить центр тела в мировых координатах
 function getBodyCenter(body) {
     const center = new THREE.Vector3();
     body.mesh.getWorldPosition(center);
     return center;
 }
 
-// Сфера-сфера: проверка столкновения
-function sphereVsSphere(a, b) {
-    const centerA = getBodyCenter(a);
-    const centerB = getBodyCenter(b);
-    const dist = centerA.distanceTo(centerB);
-    const minDist = a.radius + b.radius;
-    
-    if (dist < minDist) {
-        // Есть столкновение - находим точку контакта
-        const normal = centerB.clone().sub(centerA).normalize();
-        const contactPoint = centerA.clone().add(normal.clone().multiplyScalar(a.radius));
-        const penetration = minDist - dist;
-        
-        return {
-            collided: true,
-            normal: normal,
-            point: contactPoint,
-            penetration: penetration
-        };
+// === 2D-ПРОЕКЦИЯ ===
+
+// Проецировать 3D-точку на 2D-экран (NDC)
+function projectToScreen(point3D) {
+    const v = point3D.clone().project(camera);
+    return { x: v.x, y: v.y, z: v.z };
+}
+
+// Расстояние в 2D (плоскость экрана)
+function dist2D(a, b) {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    return Math.sqrt(dx * dx + dy * dy);
+}
+
+// 2D-круг vs 2D-круг (по проекции экрана)
+function circleVsCircle(a, b) {
+    const posA = getBodyCenter(a);
+    const posB = getBodyCenter(b);
+
+    const screenA = projectToScreen(posA);
+    const screenB = projectToScreen(posB);
+
+    // Радиус на экране (в NDC) — берём max по осям камеры
+    const rA = screenRadius(a, posA);
+    const rB = screenRadius(b, posB);
+
+    const d = dist2D(screenA, screenB);
+
+    // Проверка глубины: пересекаются ли по Z
+    const depthOverlap = Math.abs(posA.z - posB.z) < (a.radius + b.radius) * 1.5;
+
+    if (d < rA + rB && depthOverlap) {
+        // Нормаль в 2D → обратно в 3D
+        const dx = posB.x - posA.x;
+        const dy = posB.y - posA.y;
+        const dz = posB.z - posA.z;
+        const len = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+        const normal = new THREE.Vector3(dx/len, dy/len, dz/len);
+
+        const penetration = (rA + rB - d) * 200; // масштаб NDC → мир
+        const point = posA.clone().add(normal.clone().multiplyScalar(a.radius));
+
+        return { collided: true, normal, point, penetration };
     }
     return { collided: false };
 }
 
-// Сфера-бокс: проекция центра сферы на бокс
-function sphereVsBox(sphere, box) {
-    const sphereCenter = getBodyCenter(sphere);
-    const boxCenter = getBodyCenter(box);
-    
-    // Преобразуем центр сферы в локальные координаты бокса
-    const localSphere = sphereCenter.clone().sub(boxCenter);
-    
-    // Учитываем поворот бокса (упрощённо - берём касательную)
-    const boxRotation = new THREE.Quaternion();
-    box.mesh.getWorldQuaternion(boxRotation);
-    const invRotation = boxRotation.clone().invert();
-    localSphere.applyQuaternion(invRotation);
-    
-    // Ближайшая точка на боксе к центру сферы
-    const he = box.halfExtents;
-    const closest = new THREE.Vector3(
-        Math.max(-he.x, Math.min(he.x, localSphere.x)),
-        Math.max(-he.y, Math.min(he.y, localSphere.y)),
-        Math.max(-he.z, Math.min(he.z, localSphere.z))
-    );
-    
-    // Расстояние от центра сферы до ближайшей точки
-    const diff = localSphere.clone().sub(closest);
-    const dist = diff.length();
-    
-    if (dist < sphere.radius) {
-        // Нормаль в локальных координатах
-        const localNormal = dist > 0.001 ? diff.normalize() : new THREE.Vector3(0, 1, 0);
-        
-        // Преобразуем нормаль обратно в мировые координаты
-        const worldNormal = localNormal.clone().applyQuaternion(boxRotation);
-        
-        // Точка контакта в мировых координатах
-        const contactLocal = closest.clone().applyQuaternion(boxRotation).add(boxCenter);
-        
-        return {
-            collided: true,
-            normal: worldNormal,
-            point: contactLocal,
-            penetration: sphere.radius - dist
-        };
+// 2D-круг vs 2D-прямоугольник
+function circleVsRect(circle, rect) {
+    const posC = getBodyCenter(circle);
+    const posR = getBodyCenter(rect);
+
+    const screenC = projectToScreen(posC);
+    const screenR = projectToScreen(posR);
+
+    const rC = screenRadius(circle, posC);
+    const heR = screenHalfExtents(rect, posR);
+
+    // Ближайшая точка на прямоугольнике к центру круга
+    const closestX = Math.max(screenR.x - heR.x, Math.min(screenR.x + heR.x, screenC.x));
+    const closestY = Math.max(screenR.y - heR.y, Math.min(screenR.y + heR.y, screenC.y));
+
+    const dx = screenC.x - closestX;
+    const dy = screenC.y - closestY;
+    const d = Math.sqrt(dx*dx + dy*dy);
+
+    // Глубина
+    const depthOverlap = Math.abs(posC.z - posR.z) < (circle.radius + Math.max(rect.halfExtents.x, rect.halfExtents.y, rect.halfExtents.z)) * 1.5;
+
+    if (d < rC && depthOverlap) {
+        const dx3 = posR.x - posC.x;
+        const dy3 = posR.y - posC.y;
+        const dz3 = posR.z - posC.z;
+        const len = Math.sqrt(dx3*dx3 + dy3*dy3 + dz3*dz3) || 1;
+        const normal = new THREE.Vector3(dx3/len, dy3/len, dz3/len);
+
+        const penetration = (rC - d) * 200;
+        const point = posC.clone().add(normal.clone().multiplyScalar(circle.radius));
+
+        return { collided: true, normal, point, penetration };
     }
     return { collided: false };
 }
 
-// Бокс-бокс (упрощённый SAT)
-function boxVsBox(a, b) {
-    const centerA = getBodyCenter(a);
-    const centerB = getBodyCenter(b);
-    
-    // Разделяющая ось (упрощённо - только AABB)
-    const heA = a.halfExtents;
-    const heB = b.halfExtents;
-    
-    const dx = centerB.x - centerA.x;
-    const dy = centerB.y - centerA.y;
-    const dz = centerB.z - centerA.z;
-    
-    const overlapX = (heA.x + heB.x) - Math.abs(dx);
-    const overlapY = (heA.y + heB.y) - Math.abs(dy);
-    const overlapZ = (heA.z + heB.z) - Math.abs(dz);
-    
-    if (overlapX > 0 && overlapY > 0 && overlapZ > 0) {
-        // Есть столкновение - выбираем наименьшее проникновение
-        let normal, penetration;
-        
-        if (overlapX < overlapY && overlapX < overlapZ) {
-            normal = new THREE.Vector3(dx > 0 ? 1 : -1, 0, 0);
-            penetration = overlapX;
-        } else if (overlapY < overlapZ) {
-            normal = new THREE.Vector3(0, dy > 0 ? 1 : -1, 0);
-            penetration = overlapY;
+// 2D-прямоугольник vs 2D-прямоугольник (AABB в проекции)
+function rectVsRect(a, b) {
+    const posA = getBodyCenter(a);
+    const posB = getBodyCenter(b);
+
+    const screenA = projectToScreen(posA);
+    const screenB = projectToScreen(posB);
+
+    const heA = screenHalfExtents(a, posA);
+    const heB = screenHalfExtents(b, posB);
+
+    const overlapX = (heA.x + heB.x) - Math.abs(screenA.x - screenB.x);
+    const overlapY = (heA.y + heB.y) - Math.abs(screenA.y - screenB.y);
+
+    const depthOverlap = Math.abs(posA.z - posB.z) < (a.halfExtents.z + b.halfExtents.z) * 1.5;
+
+    if (overlapX > 0 && overlapY > 0 && depthOverlap) {
+        let nx, ny, pen;
+        if (overlapX < overlapY) {
+            nx = screenB.x > screenA.x ? 1 : -1;
+            ny = 0;
+            pen = overlapX;
         } else {
-            normal = new THREE.Vector3(0, 0, dz > 0 ? 1 : -1);
-            penetration = overlapZ;
+            nx = 0;
+            ny = screenB.y > screenA.y ? 1 : -1;
+            pen = overlapY;
         }
-        
-        const contactPoint = centerA.clone().add(normal.clone().multiplyScalar(heA.x));
-        
-        return {
-            collided: true,
-            normal: normal,
-            point: contactPoint,
-            penetration: penetration
-        };
+
+        const normal = new THREE.Vector3(nx, ny, (posB.z - posA.z) * 0.001).normalize();
+        const penetration = pen * 200;
+        const point = posA.clone().add(normal.clone().multiplyScalar(a.halfExtents.x));
+
+        return { collided: true, normal, point, penetration };
     }
     return { collided: false };
 }
 
-// Разрешить столкновение (толкание объектов)
+// Размер радиуса на экране (в NDC)
+function screenRadius(body, worldPos) {
+    const screen = projectToScreen(worldPos);
+    const offset = projectToScreen(worldPos.clone().add(new THREE.Vector3(body.radius, 0, 0)));
+    return Math.abs(offset.x - screen.x);
+}
+
+// Полуразмеры бокса на экране (в NDC)
+function screenHalfExtents(body, worldPos) {
+    const screen = projectToScreen(worldPos);
+    const sx = projectToScreen(worldPos.clone().add(new THREE.Vector3(body.halfExtents.x, 0, 0)));
+    const sy = projectToScreen(worldPos.clone().add(new THREE.Vector3(0, body.halfExtents.y, 0)));
+    return {
+        x: Math.abs(sx.x - screen.x) || 0.01,
+        y: Math.abs(sy.y - screen.y) || 0.01
+    };
+}
+
+// === РАЗРЕШЕНИЕ СТОЛКНОВЕНИЙ ===
+
 function resolveCollision(a, b, collision) {
     const { normal, penetration } = collision;
-    
-    // Разделяем объекты
     const totalMass = a.mass + b.mass;
     const ratioA = b.mass / totalMass;
     const ratioB = a.mass / totalMass;
-    
+
     if (!a.isStatic) {
         a.mesh.position.sub(normal.clone().multiplyScalar(penetration * ratioA));
     }
     if (!b.isStatic) {
         b.mesh.position.add(normal.clone().multiplyScalar(penetration * ratioB));
     }
-    
-    // Отскок (результирующая скорость)
+
     const relVel = a.velocity.clone().sub(b.velocity);
     const velAlongNormal = relVel.dot(normal);
-    
-    if (velAlongNormal > 0) return; // Объекты разлетаются
-    
-    const restitution = bounce;
-    const j = -(1 + restitution) * velAlongNormal / totalMass;
-    
+    if (velAlongNormal > 0) return;
+
+    const j = -(1 + bounce) * velAlongNormal / totalMass;
     const impulse = normal.clone().multiplyScalar(j);
-    
+
     if (!a.isStatic) a.velocity.sub(impulse.clone().multiplyScalar(a.mass));
     if (!b.isStatic) b.velocity.add(impulse.clone().multiplyScalar(b.mass));
 }
 
-// Проверка所有 столкновений
+// === ГЛАВНАЯ ПРОВЕРКА ===
+
 function checkAllCollisions() {
     const results = [];
-    
+
     for (let i = 0; i < collisionBodies.length; i++) {
         for (let j = i + 1; j < collisionBodies.length; j++) {
             const a = collisionBodies[i];
             const b = collisionBodies[j];
-            
+
             let collision = null;
-            
-            // Определяем типы и проверяем
+
             if (a.type === 'sphere' && b.type === 'sphere') {
-                collision = sphereVsSphere(a, b);
+                collision = circleVsCircle(a, b);
             } else if (a.type === 'sphere' && b.type === 'box') {
-                collision = sphereVsBox(a, b);
+                collision = circleVsRect(a, b);
             } else if (a.type === 'box' && b.type === 'sphere') {
-                collision = sphereVsBox(b, a);
+                collision = circleVsRect(b, a);
                 if (collision.collided) collision.normal.negate();
             } else if (a.type === 'box' && b.type === 'box') {
-                collision = boxVsBox(a, b);
+                collision = rectVsRect(a, b);
             }
-            
+
             if (collision && collision.collided) {
                 resolveCollision(a, b, collision);
                 results.push({ a, b, collision });
             }
         }
     }
-    
     return results;
 }
 
-// Применить физику к телам
 function applyPhysics(delta) {
     collisionBodies.forEach(body => {
         if (!body.isStatic) {
-            // Применяем скорость
             body.mesh.position.add(body.velocity.clone().multiplyScalar(delta));
-            
-            // Трение
             body.velocity.multiplyScalar(friction);
         }
     });
