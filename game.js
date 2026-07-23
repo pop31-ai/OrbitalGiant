@@ -762,221 +762,181 @@ function createHUD() {
     document.body.appendChild(shieldDiv);
 }
 
-// ===== ФИЗИКА СТОЛКНОВЕНИЙ (СЕЧЕНИЯ ПО ОСИ) =====
+// ===== ФИЗИКА СТОЛКНОВЕНИЙ (2D: ТОЧКА В ПОЛИГОНЕ + ПЕРЕСЕЧЕНИЕ ОТРЕЗКОВ) =====
 
 /*
-  Каждое тело — вращательно-симметричная фигура.
-  Форма задаётся полиномом r(t), где t — позиция вдоль центральной оси.
-  Столкновение: проекции центров на общую ось, сравнение радиусов сечений.
-  Нет пересечения = нет столкновения. Полиномы не спорят.
+  Все тела проецируются на плоскость XZ (горизонт, Y=0).
+  Два метода:
+    1) Point-in-polygon (чётность луча): вершины фигуры B внутри фигуры A?
+    2) Edge-intersection: ребро A пересекает ребро B? (линейное уравнение)
+  Если хотя бы одно → столкновение.
 */
 
 function createCollisionBody(mesh, type = 'sphere', radius = 10, halfExtents = null) {
     const body = {
-        mesh: mesh,
-        type: type,
-        radius: radius,
+        mesh: mesh, type, radius,
         halfExtents: halfExtents || new THREE.Vector3(10, 10, 10),
         velocity: new THREE.Vector3(0, 0, 0),
-        mass: 1,
-        isStatic: false,
-        // Полином сечения: r(t) = c0 + c1*t + c2*t²
-        // Для сферы: r(t) = sqrt(R² - t²), аппроксимация полиномом
-        profile: null,
-        axis: new THREE.Vector3(0, 0, 1) // центральная ось (локальная)
+        mass: 1, isStatic: false
     };
     collisionBodies.push(body);
     return body;
 }
 
 function getBodyCenter(body) {
-    const center = new THREE.Vector3();
-    body.mesh.getWorldPosition(center);
-    return center;
+    const c = new THREE.Vector3();
+    body.mesh.getWorldPosition(c);
+    return c;
 }
 
-// === ПРОФИЛИ СЕЧЕНИЙ ===
+// === 3D → 2D (плоскость XZ) ===
 
-// Профиль сферы: r(t) = sqrt(R² - t²), аппроксимация
-function sphereProfile(R) {
-    // Полином 3-й степени, аппроксимирующий полукруг на [-R, R]
-    // Pade-подобная: r(t) ≈ R * (1 - (t/R)²)^0.5
-    //Taylor: r(t) ≈ R(1 - t²/(2R²) - t⁴/(8R⁴))
-    return function(t) {
-        const x = t / R;
-        if (Math.abs(x) > 1) return 0;
-        return R * Math.sqrt(Math.max(0, 1 - x * x));
-    };
-}
+function to2D(pos) { return { x: pos.x, y: pos.z }; }
 
-// Профиль цилиндра: r(t) = R для |t| < H/2
-function cylinderProfile(R, H) {
-    return function(t) {
-        return Math.abs(t) <= H / 2 ? R : 0;
-    };
-}
+function getVertices2D(body) {
+    const center = getBodyCenter(body);
 
-// Профиль конуса: r(t) = R * (1 - t/H) для t ∈ [0, H]
-function coneProfile(R, H) {
-    return function(t) {
-        if (t < 0 || t > H) return 0;
-        return R * (1 - t / H);
-    };
-}
-
-// Профиль бокса (как цилиндр): r(t) = max(Rx, Ry) для |t| < Hz
-function boxProfile(halfExtents) {
-    const R = Math.max(halfExtents.x, halfExtents.y);
-    const H = halfExtents.z;
-    return cylinderProfile(R, H * 2);
-}
-
-// Профиль составной: сумма полиномов (для сложных форм)
-function compositeProfile(segments) {
-    // segments: [{tMin, tMax, fn}]
-    return function(t) {
-        for (const seg of segments) {
-            if (t >= seg.tMin && t <= seg.tMax) {
-                return seg.fn(t);
-            }
+    if (body.type === 'sphere') {
+        const v = [], n = 16;
+        for (let i = 0; i < n; i++) {
+            const a = (i / n) * Math.PI * 2;
+            v.push({ x: center.x + Math.cos(a) * body.radius, y: center.z + Math.sin(a) * body.radius });
         }
-        return 0;
-    };
-}
+        return v;
+    }
 
-// === СЕЧЕНИЕ НА ОСИ ===
-
-// Получить мировую ось тела
-function getWorldAxis(body) {
-    const axis = body.axis.clone();
     const q = new THREE.Quaternion();
     body.mesh.getWorldQuaternion(q);
-    axis.applyQuaternion(q);
-    return axis;
+    const he = body.halfExtents;
+    const corners = [
+        new THREE.Vector3(-he.x, 0, -he.z),
+        new THREE.Vector3( he.x, 0, -he.z),
+        new THREE.Vector3( he.x, 0,  he.z),
+        new THREE.Vector3(-he.x, 0,  he.z)
+    ];
+    return corners.map(c => { c.applyQuaternion(q); return { x: c.x + center.x, y: c.z + center.z }; });
 }
 
-// Расстояние вдоль оси (проекция разности центров на ось)
-function projectAlongAxis(centerA, centerB, axis) {
-    const d = centerB.clone().sub(centerA);
-    return d.dot(axis);
+// === POINT-IN-POLYGON (чётность луча) ===
+
+function pointInPolygon(px, py, poly) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+        if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi))
+            inside = !inside;
+    }
+    return inside;
 }
 
-// Сравнение сечений двух тел вдоль оси
-function compareSlices(bodyA, profileA, bodyB, profileB, axis, t) {
-    const rA = profileA(t);
-    const rB = profileB(t);
-    return { rA, rB, overlap: Math.min(rA, rB) };
+function anyVertexInside(vertsA, vertsB) {
+    for (const v of vertsB) if (pointInPolygon(v.x, v.y, vertsA)) return true;
+    return false;
 }
 
-// === ГЛАВНАЯ ПРОВЕРКА СТОЛКНОВЕНИЙ ===
+// === ПЕРЕСЕЧЕНИЕ ОТРЕЗКОВ (решение линейной системы) ===
 
-function testCollision(a, b) {
-    const centerA = getBodyCenter(a);
-    const centerB = getBodyCenter(b);
+function segIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
+    const ex = bx - ax, ey = by - ay;
+    const fx = dx - cx, fy = dy - cy;
+    const denom = ex * fy - ey * fx;
+    if (Math.abs(denom) < 1e-6) return false;
+    const px = cx - ax, py = cy - ay;
+    const t = (px * fy - py * fx) / denom;
+    const u = (px * ey - py * ex) / denom;
+    return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+}
 
-    // 1. Сферы-быстрые: отсечение по расстоянию
-    const d3 = centerA.distanceTo(centerB);
-    const maxR = a.radius + b.radius;
-    if (d3 > maxR * 1.5) return { collided: false }; // далеко — не проверяем
-
-    // 2. Ось = от центра A к центру B
-    const axis = centerB.clone().sub(centerA);
-    if (axis.length() < 0.001) return { collided: false };
-    axis.normalize();
-
-    // 3. Проекции центров на ось
-    const projA = 0; // A — начало координат на оси
-    const projB = d3; // B на расстоянии d3
-
-    // 4. Профили сечений
-    const profileA = a.profile || sphereProfile(a.radius);
-    const profileB = b.profile || sphereProfile(b.radius);
-
-    // 5. Сэмплируем вдоль оси — ищем пересечение
-    const tMin = Math.max(projA - a.radius, projB - b.radius);
-    const tMax = Math.min(projA + a.radius, projB + b.radius);
-
-    if (tMin >= tMax) return { collided: false }; // не пересекаются по оси
-
-    let maxOverlap = 0;
-    let overlapT = 0;
-    const steps = 8; // мало — быстро
-
-    for (let i = 0; i <= steps; i++) {
-        const t = tMin + (tMax - tMin) * (i / steps);
-        const rA = profileA(t - projA); // t относительно центра A
-        const rB = profileB(t - projB); // t относительно центра B
-
-        // Суммарный радиус сечения
-        const totalR = rA + rB;
-
-        // Расстояние от оси между центрами до поверхности (перпендикуляр)
-        // = расстояние между центрами проекций на перпендикуляр к оси
-        // Упрощение: в 3D перпендикулярное расстояние = d3_perp
-        const dPerp = d3; // уже на оси, перпендикуляра 0
-
-        if (d3 <= totalR) {
-            const overlap = totalR - d3;
-            if (overlap > maxOverlap) {
-                maxOverlap = overlap;
-                overlapT = t;
-            }
+function anyEdgeIntersection(vA, vB) {
+    for (let i = 0; i < vA.length; i++) {
+        const a1 = vA[i], a2 = vA[(i + 1) % vA.length];
+        for (let j = 0; j < vB.length; j++) {
+            const b1 = vB[j], b2 = vB[(j + 1) % vB.length];
+            if (segIntersect(a1.x, a1.y, a2.x, a2.y, b1.x, b1.y, b2.x, b2.y)) return true;
         }
     }
-
-    if (maxOverlap > 0.01) {
-        // Нормаль = вдоль оси между центрами
-        const normal = centerB.clone().sub(centerA).normalize();
-        const penetration = maxOverlap;
-        const point = centerA.clone().add(normal.clone().multiplyScalar(a.radius));
-
-        return { collided: true, normal, point, penetration };
-    }
-
-    return { collided: false };
+    return false;
 }
 
-// === РАЗРЕШЕНИЕ СТОЛКНОВЕНИЙ ===
+// === РАССТОЯНИЕ ТОЧКА → ОТРЕЗОК ===
+
+function ptSegDist(p, a, b) {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq < 1e-6) return Math.hypot(p.x - a.x, p.y - a.y);
+    let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+function polyMinDist(pt, poly) {
+    let min = Infinity;
+    for (let i = 0; i < poly.length; i++) {
+        const d = ptSegDist(pt, poly[i], poly[(i + 1) % poly.length]);
+        if (d < min) min = d;
+    }
+    return min;
+}
+
+// === ГЛАВНЫЙ ТЕСТ ===
+
+function testCollision(a, b) {
+    const cA = getBodyCenter(a), cB = getBodyCenter(b);
+    if (cA.distanceTo(cB) > (a.radius + b.radius) * 2) return { collided: false };
+
+    const vA = getVertices2D(a), vB = getVertices2D(b);
+
+    const insideAB = anyVertexInside(vA, vB);
+    const insideBA = anyVertexInside(vB, vA);
+    const edges = anyEdgeIntersection(vA, vB);
+
+    if (!insideAB && !insideBA && !edges) return { collided: false };
+
+    const dx = cB.x - cA.x, dz = cB.z - cA.z;
+    const len = Math.sqrt(dx * dx + dz * dz) || 1;
+    const normal = new THREE.Vector3(dx / len, 0, dz / len);
+
+    let penetration = (a.radius + b.radius - cA.distanceTo(cB)) * 0.5;
+    if (insideAB) {
+        let min = Infinity;
+        for (const v of vB) { const d = polyMinDist(v, vA); if (d < min) min = d; }
+        penetration = min;
+    } else if (insideBA) {
+        let min = Infinity;
+        for (const v of vA) { const d = polyMinDist(v, vB); if (d < min) min = d; }
+        penetration = min;
+        normal.negate();
+    }
+    if (penetration < 0.1) penetration = 0.1;
+
+    return { collided: true, normal, point: cA.clone().add(normal.clone().multiplyScalar(a.radius)), penetration };
+}
+
+// === РАЗРЕШЕНИЕ ===
 
 function resolveCollision(a, b, collision) {
     const { normal, penetration } = collision;
     const totalMass = a.mass + b.mass;
-    const ratioA = b.mass / totalMass;
-    const ratioB = a.mass / totalMass;
-
-    if (!a.isStatic) {
-        a.mesh.position.sub(normal.clone().multiplyScalar(penetration * ratioA));
-    }
-    if (!b.isStatic) {
-        b.mesh.position.add(normal.clone().multiplyScalar(penetration * ratioB));
-    }
+    if (!a.isStatic) a.mesh.position.sub(normal.clone().multiplyScalar(penetration * b.mass / totalMass));
+    if (!b.isStatic) b.mesh.position.add(normal.clone().multiplyScalar(penetration * a.mass / totalMass));
 
     const relVel = a.velocity.clone().sub(b.velocity);
-    const velAlongNormal = relVel.dot(normal);
-    if (velAlongNormal > 0) return;
-
-    const j = -(1 + bounce) * velAlongNormal / totalMass;
+    const vn = relVel.dot(normal);
+    if (vn > 0) return;
+    const j = -(1 + bounce) * vn / totalMass;
     const impulse = normal.clone().multiplyScalar(j);
-
     if (!a.isStatic) a.velocity.sub(impulse.clone().multiplyScalar(a.mass));
     if (!b.isStatic) b.velocity.add(impulse.clone().multiplyScalar(b.mass));
 }
 
-// === ГЛАВНАЯ ПРОВЕРКА ===
-
 function checkAllCollisions() {
     const results = [];
-
     for (let i = 0; i < collisionBodies.length; i++) {
         for (let j = i + 1; j < collisionBodies.length; j++) {
-            const a = collisionBodies[i];
-            const b = collisionBodies[j];
-
-            const collision = testCollision(a, b);
-
-            if (collision.collided) {
-                resolveCollision(a, b, collision);
-                results.push({ a, b, collision });
+            const c = testCollision(collisionBodies[i], collisionBodies[j]);
+            if (c.collided) {
+                resolveCollision(collisionBodies[i], collisionBodies[j], c);
+                results.push({ a: collisionBodies[i], b: collisionBodies[j], collision: c });
             }
         }
     }
@@ -991,6 +951,7 @@ function applyPhysics(delta) {
         }
     });
 }
+
 
 // Управление
 function setupControls() {
