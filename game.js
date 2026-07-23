@@ -658,7 +658,7 @@ function setupControls() {
     document.addEventListener('keydown', (e) => {
         keys[e.code] = true;
         
-        if (e.code === 'KeyE') {
+        if (e.code === 'KeyX') {
             toggleShield();
         }
         if (e.code === 'KeyR' && gameStarted) {
@@ -789,6 +789,15 @@ function updateHUD() {
     document.getElementById('speed').textContent = speed;
     document.getElementById('altitude').textContent = Math.floor(player.position.y + 50);
     
+    // Углы поворота
+    const rollDeg = Math.round((player.rotation.z * 180 / Math.PI) % 360);
+    const pitchDeg = Math.round(player.rotation.x * 180 / Math.PI);
+    const yawDeg = Math.round((player.rotation.y * 180 / Math.PI) % 360);
+    
+    document.getElementById('roll').textContent = rollDeg;
+    document.getElementById('pitch').textContent = pitchDeg;
+    document.getElementById('yaw').textContent = yawDeg;
+    
     document.getElementById('shieldBar').style.width = shieldPower + '%';
 }
 
@@ -828,20 +837,63 @@ function animate() {
     const time = clock.getElapsedTime();
     
     if (gameStarted) {
-        // Движение игрока
-        const moveSpeed = 100 * delta;
-        const rotSpeed = 1.5 * delta;
+        // Параметры полёта
+        const yawSpeed = 1.8 * delta;    // Рыскание
+        const pitchSpeed = 1.2 * delta;   // Тангаж
+        const rollSpeed = 2.5 * delta;    // Крен
+        const thrustPower = 120 * delta;  // Тяга
+        const brakePower = 80 * delta;    // Торможение
+        const lateralPower = 60 * delta;  // Боковое движение
         
-        if (keys['KeyW']) player.position.z -= moveSpeed;
-        if (keys['KeyS']) player.position.z += moveSpeed;
-        if (keys['KeyA']) player.position.x -= moveSpeed;
-        if (keys['KeyD']) player.position.x += moveSpeed;
-        if (keys['Space']) player.position.y += moveSpeed;
-        if (keys['ShiftLeft']) player.position.y -= moveSpeed;
+        // Рыскание (поворот влево/вправо)
+        if (keys['KeyA']) player.rotation.y += yawSpeed;
+        if (keys['KeyD']) player.rotation.y -= yawSpeed;
         
-        // Вращение мышью
-        player.rotation.y += mouse.x * rotSpeed;
-        player.rotation.x += mouse.y * rotSpeed * 0.5;
+        // Тангаж ( наклон вверх/вниз)
+        if (keys['KeyW']) player.rotation.x -= pitchSpeed;
+        if (keys['KeyS']) player.rotation.x += pitchSpeed;
+        
+        // Крен (вращение вокруг оси)
+        if (keys['KeyQ']) player.rotation.z += rollSpeed;
+        if (keys['KeyE']) player.rotation.z -= rollSpeed;
+        
+        // Ограничение тангажа
+        player.rotation.x = Math.max(-Math.PI / 2.5, Math.min(Math.PI / 2.5, player.rotation.x));
+        
+        // Автоматическое возврат крен к нулю при отпускании Q/E
+        if (!keys['KeyQ'] && !keys['KeyE']) {
+            player.rotation.z *= 0.95;
+        }
+        
+        // Тяга вперёд (в направлении корабля)
+        if (keys['Space']) {
+            const forward = new THREE.Vector3(0, 0, -1);
+            forward.applyQuaternion(player.quaternion);
+            player.position.add(forward.multiplyScalar(thrustPower));
+        }
+        
+        // Торможение / реверс
+        if (keys['ShiftLeft']) {
+            const backward = new THREE.Vector3(0, 0, 1);
+            backward.applyQuaternion(player.quaternion);
+            player.position.add(backward.multiplyScalar(brakePower));
+        }
+        
+        // Боковое движение (стрейф)
+        if (keys['KeyZ']) {
+            const left = new THREE.Vector3(-1, 0, 0);
+            left.applyQuaternion(player.quaternion);
+            player.position.add(left.multiplyScalar(lateralPower));
+        }
+        if (keys['KeyC']) {
+            const right = new THREE.Vector3(1, 0, 0);
+            right.applyQuaternion(player.quaternion);
+            player.position.add(right.multiplyScalar(lateralPower));
+        }
+        
+        // Подъём/спуск (вертикальный)
+        if (keys['KeyF']) player.position.y += lateralPower;
+        if (keys['KeyV']) player.position.y -= lateralPower;
         
         // Ограничение высоты
         player.position.y = Math.max(-40, Math.min(300, player.position.y));
