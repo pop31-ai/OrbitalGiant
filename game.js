@@ -20,6 +20,15 @@ let robots = [];
 let emergencyObjects = [];
 let currentStation = null;
 
+// Магнитная стыковка
+let magneticField = null;
+let isDocked = false;
+let dockProgress = 0;
+let dockRange = 80;
+let magneticBeam = null;
+let landingBeacon = null;
+let landingImage = null;
+
 const keys = {};
 const mouse = { x: 0, y: 0 };
 
@@ -241,6 +250,19 @@ function createPlayer() {
     shield.name = 'shield';
     player.add(shield);
     
+    // Магнитный луч (для стыковки)
+    const beamGeometry = new THREE.CylinderGeometry(0.3, 2, 50, 8);
+    const beamMaterial = new THREE.MeshBasicMaterial({
+        color: 0x00ffff,
+        transparent: true,
+        opacity: 0
+    });
+    magneticBeam = new THREE.Mesh(beamGeometry, beamMaterial);
+    magneticBeam.rotation.x = Math.PI / 2;
+    magneticBeam.position.z = 30;
+    magneticBeam.name = 'magneticBeam';
+    player.add(magneticBeam);
+    
     player.position.set(0, 100, 200);
     scene.add(player);
 }
@@ -405,6 +427,58 @@ function createLandingPad(config) {
         light.position.set(pos.x, 10, pos.z);
         landingPad.add(light);
     });
+    
+    // Магнитное поле (индикатор зоны стыковки)
+    const magneticGeometry = new THREE.RingGeometry(dockRange - 5, dockRange, 64);
+    const magneticMaterial = new THREE.MeshBasicMaterial({
+        color: 0x00ffff,
+        transparent: true,
+        opacity: 0.3,
+        side: THREE.DoubleSide
+    });
+    magneticField = new THREE.Mesh(magneticGeometry, magneticMaterial);
+    magneticField.rotation.x = -Math.PI / 2;
+    magneticField.position.y = 2;
+    magneticField.name = 'magneticField';
+    landingPad.add(magneticField);
+    
+    // Внутреннее кольцо
+    const innerRingGeometry = new THREE.RingGeometry(dockRange / 2 - 3, dockRange / 2, 64);
+    const innerRingMaterial = new THREE.MeshBasicMaterial({
+        color: 0x00ff00,
+        transparent: true,
+        opacity: 0.4,
+        side: THREE.DoubleSide
+    });
+    const innerRing = new THREE.Mesh(innerRingGeometry, innerRingMaterial);
+    innerRing.rotation.x = -Math.PI / 2;
+    innerRing.position.y = 2;
+    landingPad.add(innerRing);
+    
+    // Маяк посадки (вертикальный луч)
+    const beaconGeometry = new THREE.CylinderGeometry(0.5, 3, 100, 8);
+    const beaconMaterial = new THREE.MeshBasicMaterial({
+        color: 0x00ff00,
+        transparent: true,
+        opacity: 0.4
+    });
+    landingBeacon = new THREE.Mesh(beaconGeometry, beaconMaterial);
+    landingBeacon.position.y = 50;
+    landingBeacon.name = 'beacon';
+    landingPad.add(landingBeacon);
+    
+    // Точка стыковки (в центре)
+    const dockPointGeometry = new THREE.SphereGeometry(5, 16, 16);
+    const dockPointMaterial = new THREE.MeshBasicMaterial({
+        color: 0xffff00,
+        transparent: true,
+        opacity: 0.6,
+        wireframe: true
+    });
+    const dockPoint = new THREE.Mesh(dockPointGeometry, dockPointMaterial);
+    dockPoint.position.y = 10;
+    dockPoint.name = 'dockPoint';
+    landingPad.add(dockPoint);
     
     landingPad.position.set(0, -50, -300);
     scene.add(landingPad);
@@ -661,6 +735,9 @@ function setupControls() {
         if (e.code === 'KeyX') {
             toggleShield();
         }
+        if (e.code === 'KeyG' && gameStarted) {
+            toggleDocking();
+        }
         if (e.code === 'KeyR' && gameStarted) {
             triggerEmergency();
         }
@@ -741,6 +818,144 @@ function triggerEmergency() {
     pressure = Math.max(0, pressure - 15);
 }
 
+// Магнитная стыковка
+function toggleDocking() {
+    if (isDocked) {
+        // Отстыковка
+        isDocked = false;
+        dockProgress = 0;
+        const beam = player.getObjectByName('magneticBeam');
+        if (beam) beam.material.opacity = 0;
+        updateStatus('ОТСТЫКОВКА');
+        return;
+    }
+    
+    if (!landingPad) return;
+    
+    const distance = player.position.distanceTo(landingPad.position);
+    
+    if (distance < dockRange) {
+        // Начинаем стыковку
+        isDocked = true;
+        dockProgress = 100;
+        
+        // Позиционируем корабль над площадкой
+        player.position.x = landingPad.position.x;
+        player.position.z = landingPad.position.z;
+        player.position.y = landingPad.position.y + 15;
+        
+        // Выравниваем
+        player.rotation.x = 0;
+        player.rotation.z = 0;
+        
+        // Активируем луч
+        const beam = player.getObjectByName('magneticBeam');
+        if (beam) {
+            beam.material.opacity = 0.6;
+            beam.scale.y = 1.5;
+        }
+        
+        // Начисление очков за стыковку
+        const accuracyBonus = Math.floor((dockRange - distance) * 10);
+        const timeBonus = Math.floor(timer * 5);
+        const totalPoints = 500 + accuracyBonus + timeBonus;
+        score += totalPoints;
+        
+        updateStatus(`СТЫКОВКА! +${totalPoints} ОЧКОВ`);
+        showDockingResult(totalPoints, accuracyBonus, timeBonus);
+    } else {
+        updateStatus('ВНЕ ЗОНЫ СТЫКОВКИ');
+    }
+}
+
+// Показать результат стыковки
+function showDockingResult(total, accuracy, time) {
+    const resultDiv = document.createElement('div');
+    resultDiv.id = 'dockingResult';
+    resultDiv.innerHTML = `
+        <div style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); 
+            background:rgba(0,20,40,0.95); border:2px solid #0ff; padding:30px; 
+            color:#0ff; font-family:'Courier New',monospace; text-align:center; z-index:300;
+            box-shadow: 0 0 50px rgba(0,255,255,0.5);">
+            <h2 style="color:#0f0; margin-bottom:20px;">СТЫКОВКА УСПЕШНА</h2>
+            <div style="font-size:24px; margin:10px;">ТОЧНОСТЬ: +${accuracy}</div>
+            <div style="font-size:24px; margin:10px;">БОНУС ВРЕМЕНИ: +${time}</div>
+            <div style="font-size:32px; color:#ff0; margin:20px;">ИТОГО: ${total}</div>
+            <div style="margin-top:20px; font-size:14px; color:#888;">
+                Нажмите G для отстыковки или ждите загрузки...
+            </div>
+            <canvas id="screenshotCanvas" width="300" height="200" 
+                style="margin-top:20px; border:1px solid #0ff;"></canvas>
+            <div style="font-size:12px; color:#0ff; margin-top:5px;">ВИД СТАНЦИИ</div>
+        </div>
+    `;
+    document.body.appendChild(resultDiv);
+    
+    // Делаем мини-скриншот сцены
+    setTimeout(() => {
+        const canvas = document.getElementById('screenshotCanvas');
+        if (canvas) {
+            const ctx = canvas.getContext('2d');
+            // Рисуем упрощённое изображение станции
+            ctx.fillStyle = '#000011';
+            ctx.fillRect(0, 0, 300, 200);
+            
+            // Звёзды
+            for (let i = 0; i < 50; i++) {
+                ctx.fillStyle = `rgba(255,255,255,${0.3 + Math.random() * 0.7})`;
+                ctx.fillRect(Math.random() * 300, Math.random() * 200, 1, 1);
+            }
+            
+            // Станция
+            ctx.fillStyle = '#334';
+            ctx.fillRect(100, 60, 100, 80);
+            
+            // Модули
+            ctx.fillStyle = '#0066ff';
+            ctx.fillRect(80, 80, 20, 40);
+            ctx.fillRect(200, 80, 20, 40);
+            ctx.fillStyle = '#00ff66';
+            ctx.fillRect(140, 40, 20, 20);
+            ctx.fillRect(140, 140, 20, 20);
+            
+            // Солнечные панели
+            ctx.fillStyle = '#1a1a4a';
+            ctx.fillRect(30, 90, 50, 8);
+            ctx.fillRect(220, 90, 50, 8);
+            
+            // Посадочная площадка
+            ctx.fillStyle = '#00ff00';
+            ctx.beginPath();
+            ctx.arc(150, 170, 20, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Корабль
+            ctx.fillStyle = '#aaa';
+            ctx.beginPath();
+            ctx.moveTo(150, 155);
+            ctx.lineTo(145, 165);
+            ctx.lineTo(155, 165);
+            ctx.fill();
+            
+            // Луч стыковки
+            ctx.strokeStyle = 'rgba(0,255,255,0.5)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(150, 160);
+            ctx.lineTo(150, 170);
+            ctx.stroke();
+        }
+    }, 100);
+    
+    // Удаляем через 3 секунды
+    setTimeout(() => {
+        if (resultDiv.parentNode) {
+            resultDiv.parentNode.removeChild(resultDiv);
+        }
+    }, 3000);
+}
+
 // Проверка посадки
 function checkLanding() {
     if (!landingPad) return;
@@ -748,21 +963,15 @@ function checkLanding() {
     const distance = player.position.distanceTo(landingPad.position);
     const speed = player.userData.velocity ? player.userData.velocity.length() : 0;
     
-    if (distance < 60 && speed < 2) {
-        // Успешная посадка!
-        score += 1000 + Math.floor(timer * 10);
-        updateStatus('ПОСАДКА ВЫПОЛНЕНА!');
-        
-        setTimeout(() => {
-            currentLevel++;
-            timer = 60;
-            fuel = Math.min(100, fuel + 30);
-            pressure = Math.min(100, pressure + 20);
-            createLevel(currentLevel);
-        }, 2000);
-    } else if (distance < 60) {
-        updateStatus('СЛИШКОМ БЫСТРО!');
-        fuel = Math.max(0, fuel - 10);
+    if (isDocked) {
+        updateStatus('СТЫКОВАН - Нажмите G для отстыковки');
+        return;
+    }
+    
+    if (distance < dockRange) {
+        updateStatus('В ЗОНЕ СТЫКОВКИ - Нажмите G');
+    } else {
+        updateStatus('ПРИБЛИЖЬТЕСЬ К ПЛОЩАДКЕ');
     }
 }
 
@@ -826,7 +1035,13 @@ function clearLevel() {
     if (landingPad) {
         scene.remove(landingPad);
         landingPad = null;
+        magneticField = null;
+        landingBeacon = null;
     }
+    
+    // Сброс стыковки
+    isDocked = false;
+    dockProgress = 0;
 }
 
 // Анимация
@@ -962,6 +1177,30 @@ function animate() {
                 nav.rotation.x += 0.01;
                 nav.position.y = 15 + Math.sin(time * 2) * 5;
             }
+            
+            // Магнитное поле - пульсация
+            if (magneticField) {
+                magneticField.material.opacity = 0.2 + Math.sin(time * 3) * 0.15;
+                magneticField.rotation.z += 0.005;
+            }
+            
+            // Маяк - вращение и пульсация
+            if (landingBeacon) {
+                landingBeacon.rotation.y += 0.02;
+                landingBeacon.material.opacity = 0.3 + Math.sin(time * 4) * 0.2;
+            }
+            
+            // Точка стыковки
+            const dockPoint = landingPad.getObjectByName('dockPoint');
+            if (dockPoint) {
+                dockPoint.rotation.y += 0.03;
+                dockPoint.rotation.x += 0.02;
+            }
+        }
+        
+        // Магнитный луч корабля
+        if (magneticBeam && isDocked) {
+            magneticBeam.material.opacity = 0.4 + Math.sin(time * 5) * 0.2;
         }
         
         // Аварийные объекты
