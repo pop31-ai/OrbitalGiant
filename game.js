@@ -718,7 +718,6 @@ function createEmergencyObject() {
     body.mass = 2;
     obj.userData.collisionBody = body;
 }
-}
 
 // Взрыв
 function createExplosion(position) {
