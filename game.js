@@ -1258,11 +1258,11 @@ const LEVER_ACTIONS = {
         duration: 3500,
         execute: (bot) => {
             const colors = [0xff0000, 0x00ff00, 0x0066ff, 0xff00ff, 0xffff00, 0xff6600, 0x00ffff, 0xffffff];
-            const names = ['КРАСНЫЙ', 'ЗЕЛЁНЫЙ', 'СИНИЙ', 'ФИОЛЕТОВЫЙ', 'ЖЁЛТЫЙ', 'ОРАНЖЕВЫЙ', 'ГОЛУБОЙ', 'БЕЛЫЙ'];
+            const names = ['КРАСНЫЙ', 'ЗЕЛЁНЫЙ', 'СИНИЙ', 'РОЗОВЫЙ', 'ЖЁЛТЫЙ', 'ОРАНЖЕВЫЙ', 'БИРЮЗОВЫЙ', 'БЕЛЫЙ'];
             const ci = Math.floor(Math.random() * colors.length);
             if (stations[0]) {
                 stations[0].children.forEach(child => {
-                    if (child.material && child.geometry) {
+                    if (child.material) {
                         child.material.color.setHex(colors[ci]);
                     }
                 });
@@ -1270,15 +1270,19 @@ const LEVER_ACTIONS = {
             score += 150;
             return `ПОКРАШЕНО В ${names[ci]}! +150`;
         }
+    },
+    docking: {
+        name: 'СТЫКОВКА',
+        color: '#0ff',
+        duration: 1500,
+        execute: (bot) => {
+            toggleDocking();
+            return isDocked ? 'СТЫКОВКА ВЫПОЛНЕНА!' : 'ОТСТЫКОВКА ВЫПОЛНЕНА!';
+        }
     }
 };
 
 function activateLever(action) {
-    if (!isDocked) {
-        updateStatus('СНАЧАЛА СТЫКУЙСЯ (G)');
-        return;
-    }
-
     const panel = document.querySelector(`[data-action="${action}"]`);
     if (panel.classList.contains('active-lever')) return;
 
