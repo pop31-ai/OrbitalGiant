@@ -1364,11 +1364,18 @@ function toggleCommandDeck() {
 
 // ===== ГОЛОГРАФИЧЕСКИЕ КНОПКИ ПИЛОТИРОВАНИЯ =====
 
+const PILOT_ACTIONS = {
+    'KeyX': () => toggleShield(),
+    'KeyG': () => { if (gameStarted) toggleDocking(); },
+    'KeyR': () => { if (gameStarted) triggerEmergency(); }
+};
+
 function pilotPress(btn) {
     const key = btn.dataset.key;
     if (!key) return;
     keys[key] = true;
     btn.classList.add('pressed');
+    if (PILOT_ACTIONS[key]) PILOT_ACTIONS[key]();
 }
 
 function pilotRelease(btn) {
