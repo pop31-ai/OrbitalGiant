@@ -1087,16 +1087,26 @@ function testCollision(a, b) {
 function resolveCollision(a, b, collision) {
     const { normal, penetration } = collision;
     const totalMass = a.mass + b.mass;
-    if (!a.isStatic) a.mesh.position.sub(normal.clone().multiplyScalar(penetration * b.mass / totalMass));
-    if (!b.isStatic) b.mesh.position.add(normal.clone().multiplyScalar(penetration * a.mass / totalMass));
 
-    const relVel = a.velocity.clone().sub(b.velocity);
-    const vn = relVel.dot(normal);
-    if (vn > 0) return;
-    const j = -(1 + bounce) * vn / totalMass;
-    const impulse = normal.clone().multiplyScalar(j);
-    if (!a.isStatic) a.velocity.sub(impulse.clone().multiplyScalar(a.mass));
-    if (!b.isStatic) b.velocity.add(impulse.clone().multiplyScalar(b.mass));
+    if (a.isStatic && !b.isStatic) {
+        b.mesh.position.add(normal.clone().multiplyScalar(penetration));
+        const vn = b.velocity.dot(normal);
+        if (vn < 0) b.velocity.sub(normal.clone().multiplyScalar(vn));
+    } else if (b.isStatic && !a.isStatic) {
+        a.mesh.position.sub(normal.clone().multiplyScalar(penetration));
+        const vn = a.velocity.dot(normal);
+        if (vn < 0) a.velocity.sub(normal.clone().multiplyScalar(vn));
+    } else {
+        a.mesh.position.sub(normal.clone().multiplyScalar(penetration * b.mass / totalMass));
+        b.mesh.position.add(normal.clone().multiplyScalar(penetration * a.mass / totalMass));
+        const relVel = a.velocity.clone().sub(b.velocity);
+        const vn = relVel.dot(normal);
+        if (vn > 0) return;
+        const j = -(1 + bounce) * vn / totalMass;
+        const impulse = normal.clone().multiplyScalar(j);
+        a.velocity.sub(impulse.clone().multiplyScalar(a.mass));
+        b.velocity.add(impulse.clone().multiplyScalar(b.mass));
+    }
 }
 
 function checkAllCollisions() {
@@ -1117,6 +1127,11 @@ function checkAllCollisions() {
         const key = a < b ? a + ':' + b : b + ':' + a;
         if (seen.has(key)) continue;
         seen.add(key);
+
+        // Игрок не сталкивается со статическими объектами (свободный полёт)
+        const isPlayerA = a === player.userData.collisionBody;
+        const isPlayerB = b === player.userData.collisionBody;
+        if ((isPlayerA && b.isStatic) || (isPlayerB && a.isStatic)) continue;
 
         const c = testCollision(a, b);
         if (c.collided) {
