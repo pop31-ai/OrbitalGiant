@@ -984,6 +984,93 @@ function epa(verticesA, verticesB, gjkResult) {
     return null;
 }
 
+// ===== BVH TREE (Bounding Volume Hierarchy) =====
+
+/*
+  Быстрое отсечение: не проверяем все N*(N-1)/2 пар,
+  а строим дерево AABB и проверяем только пересекающиеся узлы.
+  Листья = отдельные тела. Внутренние узлы = AABB дочерних.
+*/
+
+class BVHNode {
+    constructor(bodies, depth = 0) {
+        this.body = null;
+        this.left = null;
+        this.right = null;
+        this.aabbMin = new THREE.Vector3(Infinity, Infinity, Infinity);
+        this.aabbMax = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+
+        if (bodies.length === 0) return;
+
+        // Вычисляем общий AABB
+        for (const b of bodies) {
+            const c = getBodyCenter(b);
+            const r = b.radius * 1.5;
+            this.aabbMin.min(c.clone().sub(new THREE.Vector3(r, r, r)));
+            this.aabbMax.max(c.clone().add(new THREE.Vector3(r, r, r)));
+        }
+
+        if (bodies.length === 1) {
+            this.body = bodies[0];
+            return;
+        }
+
+        // Разделяем по самой длинной оси
+        const size = new THREE.Vector3().subVectors(this.aabbMax, this.aabbMin);
+        let axis = 0;
+        if (size.y > size.x && size.y > size.z) axis = 1;
+        else if (size.z > size.x && size.z > size.y) axis = 2;
+
+        const axisName = ['x', 'y', 'z'][axis];
+        bodies.sort((a, b) => {
+            const ca = getBodyCenter(a)[axisName];
+            const cb = getBodyCenter(b)[axisName];
+            return ca - cb;
+        });
+
+        const mid = Math.floor(bodies.length / 2);
+        this.left = new BVHNode(bodies.slice(0, mid), depth + 1);
+        this.right = new BVHNode(bodies.slice(mid), depth + 1);
+    }
+}
+
+// Проверка AABB пересечения двух узлов
+function aabbOverlap(a, b) {
+    return (
+        a.aabbMin.x <= b.aabbMax.x && a.aabbMax.x >= b.aabbMin.x &&
+        a.aabbMin.y <= b.aabbMax.y && a.aabbMax.y >= b.aabbMin.y &&
+        a.aabbMin.z <= b.aabbMax.z && a.aabbMax.z >= b.aabbMin.z
+    );
+}
+
+// Собрать все пары пересекающихся листьев
+function queryBVH(nodeA, nodeB, pairs) {
+    if (!nodeA || !nodeB) return;
+    if (!aabbOverlap(nodeA, nodeB)) return;
+
+    // Оба — листья
+    if (nodeA.body && nodeB.body) {
+        if (nodeA.body !== nodeB.body) {
+            pairs.push([nodeA.body, nodeB.body]);
+        }
+        return;
+    }
+
+    // Разворачиваем рекурсивно
+    if (nodeA.body) {
+        queryBVH(nodeA, nodeB.left, pairs);
+        queryBVH(nodeA, nodeB.right, pairs);
+    } else if (nodeB.body) {
+        queryBVH(nodeA.left, nodeB, pairs);
+        queryBVH(nodeA.right, nodeB, pairs);
+    } else {
+        queryBVH(nodeA.left, nodeB.left, pairs);
+        queryBVH(nodeA.left, nodeB.right, pairs);
+        queryBVH(nodeA.right, nodeB.left, pairs);
+        queryBVH(nodeA.right, nodeB.right, pairs);
+    }
+}
+
 // === MAIN TEST ===
 
 function testCollision(a, b) {
@@ -1024,15 +1111,30 @@ function resolveCollision(a, b, collision) {
 
 function checkAllCollisions() {
     const results = [];
-    for (let i = 0; i < collisionBodies.length; i++) {
-        for (let j = i + 1; j < collisionBodies.length; j++) {
-            const c = testCollision(collisionBodies[i], collisionBodies[j]);
-            if (c.collided) {
-                resolveCollision(collisionBodies[i], collisionBodies[j], c);
-                results.push({ a: collisionBodies[i], b: collisionBodies[j], collision: c });
-            }
+
+    if (collisionBodies.length < 2) return results;
+
+    // Строим BVH дерево (каждый кадр — тела двигаются)
+    const root = new BVHNode([...collisionBodies]);
+
+    // Запрашиваем кандидатов через дерево
+    const pairs = [];
+    queryBVH(root, root, pairs);
+
+    // Дедупликация пар (A,B) и (B,A)
+    const seen = new Set();
+    for (const [a, b] of pairs) {
+        const key = a < b ? a + ':' + b : b + ':' + a;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        const c = testCollision(a, b);
+        if (c.collided) {
+            resolveCollision(a, b, c);
+            results.push({ a, b, collision: c });
         }
     }
+
     return results;
 }
 
