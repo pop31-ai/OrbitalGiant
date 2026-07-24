@@ -1769,7 +1769,7 @@ function animate() {
         if (keys['KeyV']) player.position.y -= lateralPower;
         
         // Ограничение высоты
-        player.position.y = Math.max(-40, Math.min(300, player.position.y));
+        player.position.y = Math.max(-500, Math.min(500, player.position.y));
         
         // Обновляем скорость игрока для физики
         if (player.userData.collisionBody) {
