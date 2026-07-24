@@ -392,14 +392,16 @@ function createStation(config) {
     coreBody.mass = 1000;
     station.userData.collisionBodies.push(coreBody);
     
-    // Модули
+    // Модули (только модули, не панели)
     station.children.forEach(child => {
         if (child.geometry && child.geometry.type === 'BoxGeometry') {
             const size = child.geometry.parameters;
-            const body = createCollisionBody(child, 'box', 0, new THREE.Vector3(size.width/2, size.height/2, size.depth/2));
-            body.isStatic = true;
-            body.mass = 500;
-            station.userData.collisionBodies.push(body);
+            if (size.width === 20 && size.height === 20 && size.depth === 20) {
+                const body = createCollisionBody(child, 'box', 0, new THREE.Vector3(size.width/2, size.height/2, size.depth/2));
+                body.isStatic = true;
+                body.mass = 500;
+                station.userData.collisionBodies.push(body);
+            }
         }
     });
     
