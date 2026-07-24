@@ -782,64 +782,47 @@ function getBodyCenter(body) {
     return c;
 }
 
-function getVertices(body) {
-    if (body.vertices) return body.vertices;
-    const center = getBodyCenter(body);
-    const q = new THREE.Quaternion();
-    body.mesh.getWorldQuaternion(q);
+// === ANALYTICAL SUPPORT FUNCTION (no vertex lists) ===
 
-    if (body.type === 'sphere') {
-        const v = [], n = 12;
-        for (let i = 0; i < n; i++) {
-            const phi = Math.acos(-1 + (2 * i) / n);
-            const theta = Math.sqrt(n * Math.PI) * phi;
-            v.push(new THREE.Vector3(
-                body.radius * Math.cos(theta) * Math.sin(phi),
-                body.radius * Math.sin(theta) * Math.sin(phi),
-                body.radius * Math.cos(phi)
-            ).applyQuaternion(q).add(center));
-        }
-        return v;
-    }
-
-    const he = body.halfExtents;
-    const corners = [
-        new THREE.Vector3(-he.x, -he.y, -he.z),
-        new THREE.Vector3( he.x, -he.y, -he.z),
-        new THREE.Vector3( he.x,  he.y, -he.z),
-        new THREE.Vector3(-he.x,  he.y, -he.z),
-        new THREE.Vector3(-he.x, -he.y,  he.z),
-        new THREE.Vector3( he.x, -he.y,  he.z),
-        new THREE.Vector3( he.x,  he.y,  he.z),
-        new THREE.Vector3(-he.x,  he.y,  he.z)
-    ];
-    return corners.map(c => c.clone().applyQuaternion(q).add(center));
+function supportSphere(center, radius, d) {
+    if (d.lengthSq() < 1e-10) return center.clone();
+    return new THREE.Vector3().copy(d).normalize().multiplyScalar(radius).add(center);
 }
 
-// === SUPPORT FUNCTION (Minkowski difference A-B) ===
+function supportBox(center, halfExtents, q, d) {
+    const localD = d.clone().applyQuaternion(q.clone().conjugate());
+    const local = new THREE.Vector3(
+        Math.sign(localD.x) * halfExtents.x,
+        Math.sign(localD.y) * halfExtents.y,
+        Math.sign(localD.z) * halfExtents.z
+    );
+    return local.applyQuaternion(q).add(center);
+}
 
-function support(bodyA, verticesA, bodyB, verticesB, d) {
-    let maxA = -Infinity, bestA = 0;
-    for (let i = 0; i < verticesA.length; i++) {
-        const dot = verticesA[i].x * d.x + verticesA[i].y * d.y + verticesA[i].z * d.z;
-        if (dot > maxA) { maxA = dot; bestA = i; }
+function supportBody(body, d) {
+    const c = getBodyCenter(body);
+    const q = new THREE.Quaternion();
+    body.mesh.getWorldQuaternion(q);
+    if (body.type === 'sphere') {
+        return supportSphere(c, body.radius, d);
     }
-    let maxB = -Infinity, bestB = 0;
-    for (let i = 0; i < verticesB.length; i++) {
-        const dot = -verticesB[i].x * d.x + -verticesB[i].y * d.y + -verticesB[i].z * d.z;
-        if (dot > maxB) { maxB = dot; bestB = i; }
-    }
-    return new THREE.Vector3().subVectors(verticesA[bestA], verticesB[bestB]);
+    return supportBox(c, body.halfExtents, q, d);
+}
+
+function minkowskiSupport(bodyA, bodyB, d) {
+    const sA = supportBody(bodyA, d);
+    const sB = supportBody(bodyB, d.clone().negate());
+    return new THREE.Vector3().subVectors(sA, sB);
 }
 
 // === GJK ===
 
-function gjkIntersects(verticesA, verticesB) {
+function gjkIntersects(bodyA, bodyB) {
     const d = new THREE.Vector3(1, 0, 0);
     const simplex = [];
 
     for (let iter = 0; iter < 64; iter++) {
-        const a = support(null, verticesA, null, verticesB, d);
+        const a = minkowskiSupport(bodyA, bodyB, d);
         simplex.unshift(a);
 
         if (a.dot(d) < 0) return { hit: false };
@@ -898,7 +881,7 @@ function gjkIntersects(verticesA, verticesB) {
 
 // === EPA (Expanding Polytope Algorithm) ===
 
-function epa(verticesA, verticesB, gjkResult) {
+function epa(bodyA, bodyB, gjkResult) {
     const simplex = gjkResult.simplex;
     if (simplex.length < 4) return null;
 
@@ -927,12 +910,12 @@ function epa(verticesA, verticesB, gjkResult) {
         const f = faces[closestFace];
         const d = f.normal.clone();
 
-        const p = support(null, verticesA, null, verticesB, d);
+        const p = minkowskiSupport(bodyA, bodyB, d);
 
         if (Math.abs(p.dot(d) - f.dist) < 0.0001) {
             const penetration = f.dist;
             const normal = f.normal;
-            const pointOnA = p.clone().add(verticesB[0]);
+            const pointOnA = supportBody(bodyA, normal);
             return { normal, depth: penetration, point: pointOnA };
         }
 
@@ -1085,12 +1068,10 @@ function testCollision(a, b) {
     const rB = getBoundingRadius(b);
     if (cA.distanceTo(cB) > rA + rB + 1) return { collided: false };
 
-    const vA = getVertices(a), vB = getVertices(b);
-
-    const gjkResult = gjkIntersects(vA, vB);
+    const gjkResult = gjkIntersects(a, b);
     if (!gjkResult.hit) return { collided: false };
 
-    const epaResult = epa(vA, vB, gjkResult);
+    const epaResult = epa(a, b, gjkResult);
     if (!epaResult || epaResult.depth < 0.01) return { collided: false };
 
     return {
