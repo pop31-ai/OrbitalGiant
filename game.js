@@ -1147,6 +1147,211 @@ function applyPhysics(delta) {
     });
 }
 
+// ===== ШТУРВАЛ: РЕЖИМ УПРАВЛЕНИЯ =====
+
+let commandDeckOpen = false;
+let activeBots = [];
+let botIdCounter = 0;
+
+const LEVER_ACTIONS = {
+    medical: {
+        name: 'МЕДИЦИНСКИЙ',
+        color: '#0f0',
+        duration: 4000,
+        execute: (bot) => {
+            const findings = [
+                'ОБНАРУЖЕНЫ СЛЕЗЫ ЖИЗНИ! +300',
+                'СЛЕДЫ МИКРООРГАНИЗМОВ +200',
+                'ДНК-ПРОБА ОТРИЦАТЕЛЬНА',
+                'ТЕПЛОВЫЙ СЛЕД НА МОДУЛЕ B3!',
+                'КИСЛОРОДНЫЙ СЛЕД: 12%',
+                'НЕГАТИВ: стерильность 99.9%',
+                'АНОМАЛИЯ: неизвестный белок +500',
+                'СТАНЦИЯ МЕРТВА... ИЛИ НЕТ?'
+            ];
+            return findings[Math.floor(Math.random() * findings.length)];
+        }
+    },
+    engineer: {
+        name: 'ИНЖЕНЕРНЫЙ',
+        color: '#f80',
+        duration: 5000,
+        execute: (bot) => {
+            const fixes = [
+                'РЕМОНТ ЩИТА: +15% давления',
+                'АПГРЕЙД ДВИГАТЕЛЯ: +10% тяга',
+                'ЗАМЕНА КАБЕЛЯ: онлайн!',
+                'ШЛЮЗ ОТРЕМОНТИРОВАН!',
+                'СОЛНЕЧНАЯ ПАНЕЛЬ: +20% энергии',
+                'АВАРИЙНЫЙ КОМПРЕССОР: НЕ ИСПРАВЛЕН',
+                'СИСТЕМА ОХЛАЖДЕНИЯ: НОМИНАЛ',
+                'МОДУЛЬ ЖИЗНЕОБЕСПЕЧЕНИЯ: +25% запас'
+            ];
+            const fix = fixes[Math.floor(Math.random() * fixes.length)];
+            if (fix.includes('+')) {
+                const val = parseInt(fix.match(/\+(\d+)/)[1]);
+                if (fix.includes('давл')) pressure = Math.min(100, pressure + val);
+                else fuel = Math.min(100, fuel + val * 0.5);
+                score += val * 2;
+            }
+            return fix;
+        }
+    },
+    scanner: {
+        name: 'СКАНЕР',
+        color: '#08f',
+        duration: 3000,
+        execute: (bot) => {
+            const dist = landingPad ? Math.floor(player.position.distanceTo(landingPad.position)) : '???';
+            const readings = [
+                `ДО ПЛОЩАДКИ: ${dist}м`,
+                `ОБЪЕКТОВ ПОБЛИЗОСТИ: ${emergencyObjects.length}`,
+                `СТАНЦИЯ: ${(stations[0]?.position.length() || 0).toFixed(0)}м`,
+                `ТЕМПЕРАТУРА: ${(Math.random() * 40 - 20).toFixed(1)}°C`,
+                `РАДИАЦИЯ: ${(Math.random() * 5).toFixed(2)} мЗв/ч`,
+                `КАРТА: ${Math.floor(Math.random()*360)}° от центра`
+            ];
+            return readings[Math.floor(Math.random() * readings.length)];
+        }
+    },
+    selfie: {
+        name: 'СЕЛФИ',
+        color: '#f0f',
+        duration: 2000,
+        execute: (bot) => {
+            score += 500;
+            // Мини-скриншот
+            const canvas = document.createElement('canvas');
+            canvas.width = 160; canvas.height = 120;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#000022';
+            ctx.fillRect(0, 0, 160, 120);
+            for (let i = 0; i < 30; i++) {
+                ctx.fillStyle = `rgba(255,255,255,${Math.random()})`;
+                ctx.fillRect(Math.random()*160, Math.random()*120, 1, 1);
+            }
+            ctx.fillStyle = '#0066ff';
+            ctx.fillRect(50, 30, 60, 60);
+            ctx.fillStyle = '#00ff88';
+            ctx.beginPath(); ctx.arc(80, 100, 15, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = '#ff0';
+            ctx.font = '10px Courier';
+            ctx.fillText('SELFIE +500', 40, 115);
+            
+            const popup = document.createElement('div');
+            popup.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:400;border:2px solid #f0f;background:rgba(0,0,0,0.9);padding:5px;box-shadow:0 0 30px #f0f;';
+            popup.appendChild(canvas);
+            document.body.appendChild(popup);
+            setTimeout(() => popup.remove(), 2500);
+            return 'ФОТО СДЕЛАНО! +500 ОЧКОВ';
+        }
+    },
+    paint: {
+        name: 'ПОКРАСКА',
+        color: '#ff0',
+        duration: 3500,
+        execute: (bot) => {
+            const colors = [0xff0000, 0x00ff00, 0x0066ff, 0xff00ff, 0xffff00, 0xff6600, 0x00ffff, 0xffffff];
+            const names = ['КРАСНЫЙ', 'ЗЕЛЁНЫЙ', 'СИНИЙ', 'ФИОЛЕТОВЫЙ', 'ЖЁЛТЫЙ', 'ОРАНЖЕВЫЙ', 'ГОЛУБОЙ', 'БЕЛЫЙ'];
+            const ci = Math.floor(Math.random() * colors.length);
+            if (stations[0]) {
+                stations[0].children.forEach(child => {
+                    if (child.material && child.geometry) {
+                        child.material.color.setHex(colors[ci]);
+                    }
+                });
+            }
+            score += 150;
+            return `ПОКРАШЕНО В ${names[ci]}! +150`;
+        }
+    }
+};
+
+function activateLever(action) {
+    if (!isDocked) {
+        updateStatus('СНАЧАЛА СТЫКУЙСЯ (G)');
+        return;
+    }
+
+    const panel = document.querySelector(`[data-action="${action}"]`);
+    if (panel.classList.contains('active-lever')) return;
+
+    const config = LEVER_ACTIONS[action];
+    panel.classList.add('active-lever');
+
+    const barFill = panel.querySelector('.lever-bar-fill');
+    const resultDiv = panel.querySelector('.lever-result');
+    resultDiv.textContent = 'ВЫПОЛНЯЕТСЯ...';
+    resultDiv.style.color = config.color;
+    barFill.style.width = '0%';
+
+    const bot = {
+        id: ++botIdCounter,
+        action,
+        panel,
+        barFill,
+        resultDiv,
+        startTime: Date.now(),
+        duration: config.duration
+    };
+    activeBots.push(bot);
+
+    updateBotStatus();
+
+    // Анимация прогресса
+    const interval = setInterval(() => {
+        const elapsed = Date.now() - bot.startTime;
+        const progress = Math.min(100, (elapsed / bot.duration) * 100);
+        barFill.style.width = progress + '%';
+
+        if (progress >= 100) {
+            clearInterval(interval);
+            const result = config.execute(bot);
+            resultDiv.textContent = result;
+            resultDiv.style.color = '#0f0';
+            panel.classList.remove('active-lever');
+            score += 100;
+            activeBots = activeBots.filter(b => b !== bot);
+            updateBotStatus();
+            updateHUD();
+        }
+    }, 50);
+}
+
+function updateBotStatus() {
+    const statusDiv = document.getElementById('botStatus');
+    if (activeBots.length === 0) {
+        statusDiv.classList.remove('active');
+        return;
+    }
+    statusDiv.classList.add('active');
+    statusDiv.innerHTML = activeBots.map(bot => {
+        const config = LEVER_ACTIONS[bot.action];
+        const elapsed = Date.now() - bot.startTime;
+        const pct = Math.floor(Math.min(100, (elapsed / bot.duration) * 100));
+        return `<div class="bot-tag" style="border-color:${config.color};color:${config.color}">
+            🤖 BOT #${bot.id} | ${config.name} | ${pct}%
+        </div>`;
+    }).join('');
+}
+
+function toggleCommandDeck() {
+    commandDeckOpen = !commandDeckOpen;
+    const deck = document.getElementById('commandDeck');
+    const toggle = document.getElementById('commandToggle');
+    
+    if (commandDeckOpen) {
+        deck.classList.add('active');
+        deck.classList.remove('retracted');
+        toggle.textContent = '[ TAB ] ЗАКРЫТЬ';
+        document.body.style.cursor = 'default';
+    } else {
+        deck.classList.remove('active');
+        toggle.textContent = '[ TAB ] ШТУРВАЛ';
+        document.body.style.cursor = 'none';
+    }
+}
+
 
 // Управление
 function setupControls() {
@@ -1161,6 +1366,10 @@ function setupControls() {
         }
         if (e.code === 'KeyR' && gameStarted) {
             triggerEmergency();
+        }
+        if (e.code === 'Tab') {
+            e.preventDefault();
+            if (isDocked) toggleCommandDeck();
         }
     });
     
@@ -1180,6 +1389,9 @@ function setupControls() {
     });
     
     document.getElementById('startBtn').addEventListener('click', startGame);
+    document.getElementById('commandToggle').addEventListener('click', () => {
+        if (isDocked) toggleCommandDeck();
+    });
     
     window.addEventListener('resize', () => {
         camera.aspect = window.innerWidth / window.innerHeight;
@@ -1248,6 +1460,9 @@ function toggleDocking() {
         const beam = player.getObjectByName('magneticBeam');
         if (beam) beam.material.opacity = 0;
         updateStatus('ОТСТЫКОВКА');
+        // Закрыть штурвал
+        if (commandDeckOpen) toggleCommandDeck();
+        document.getElementById('commandToggle').classList.remove('visible');
         return;
     }
     
@@ -1284,6 +1499,7 @@ function toggleDocking() {
         
         updateStatus(`СТЫКОВКА! +${totalPoints} ОЧКОВ`);
         showDockingResult(totalPoints, accuracyBonus, timeBonus);
+        document.getElementById('commandToggle').classList.add('visible');
     } else {
         updateStatus('ВНЕ ЗОНЫ СТЫКОВКИ');
     }
@@ -1475,6 +1691,10 @@ function clearLevel() {
     // Сброс стыковки
     isDocked = false;
     dockProgress = 0;
+    if (commandDeckOpen) toggleCommandDeck();
+    activeBots = [];
+    document.getElementById('commandToggle').classList.remove('visible');
+    document.getElementById('botStatus').classList.remove('active');
 }
 
 // Анимация

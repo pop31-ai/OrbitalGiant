@@ -190,6 +190,151 @@
             pointer-events: none;
             z-index: 50;
         }
+
+        /* ШТУРВАЛ */
+        #commandDeck {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 280px;
+            background: linear-gradient(180deg, rgba(0,10,20,0) 0%, rgba(0,10,20,0.95) 30%);
+            z-index: 120;
+            pointer-events: all;
+            display: none;
+            padding: 40px 20px 15px;
+        }
+        #commandDeck.active { display: flex; align-items: flex-start; justify-content: center; gap: 15px; }
+
+        .lever-panel {
+            background: rgba(0,20,40,0.8);
+            border: 1px solid #0ff;
+            border-radius: 8px;
+            padding: 10px;
+            width: 130px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            position: relative;
+            overflow: hidden;
+        }
+        .lever-panel::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 3px;
+            background: var(--color);
+            box-shadow: 0 0 10px var(--color);
+        }
+        .lever-panel:hover {
+            border-color: var(--color);
+            box-shadow: 0 0 20px var(--color);
+            transform: translateY(-5px);
+        }
+        .lever-panel.active-lever {
+            border-color: var(--color);
+            background: rgba(0,40,60,0.9);
+        }
+        .lever-panel.active-lever .lever-indicator {
+            background: var(--color);
+            box-shadow: 0 0 15px var(--color);
+        }
+
+        .lever-icon {
+            font-size: 28px;
+            margin-bottom: 5px;
+        }
+        .lever-name {
+            color: var(--color);
+            font-size: 11px;
+            font-weight: bold;
+            margin-bottom: 4px;
+        }
+        .lever-desc {
+            color: #668;
+            font-size: 9px;
+            margin-bottom: 8px;
+            line-height: 1.3;
+        }
+        .lever-indicator {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: #333;
+            margin: 0 auto 4px;
+            transition: all 0.3s;
+        }
+        .lever-bar {
+            width: 100%;
+            height: 4px;
+            background: #112;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .lever-bar-fill {
+            height: 100%;
+            width: 0%;
+            background: var(--color);
+            transition: width 0.5s;
+        }
+        .lever-result {
+            color: #0f0;
+            font-size: 9px;
+            margin-top: 4px;
+            min-height: 14px;
+        }
+
+        #commandToggle {
+            position: fixed;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 130;
+            pointer-events: all;
+            background: rgba(0,20,40,0.8);
+            border: 1px solid #0ff;
+            color: #0ff;
+            padding: 8px 25px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: none;
+        }
+        #commandToggle:hover {
+            background: #0ff;
+            color: #000;
+            box-shadow: 0 0 20px #0ff;
+        }
+        #commandToggle.visible { display: block; }
+
+        .bot-status {
+            position: fixed;
+            top: 50%;
+            right: 20px;
+            transform: translateY(-50%);
+            z-index: 140;
+            pointer-events: none;
+            display: none;
+        }
+        .bot-status.active { display: block; }
+        .bot-tag {
+            background: rgba(0,20,40,0.85);
+            border: 1px solid;
+            padding: 6px 10px;
+            margin-bottom: 4px;
+            font-size: 10px;
+            border-radius: 4px;
+            animation: botPulse 1.5s infinite;
+        }
+        @keyframes botPulse {
+            0%, 100% { opacity: 0.7; }
+            50% { opacity: 1; }
+        }
+        #commandDeck.retracted { 
+            height: 40px; 
+            padding-top: 5px;
+        }
+        #commandDeck.retracted .lever-panel { display: none; }
     </style>
 </head>
 <body>
@@ -223,6 +368,53 @@
     <div id="crosshair"></div>
     <div id="emergency">EMERGENCY</div>
     <div id="levelInfo"></div>
+    
+    <button id="commandToggle">[ TAB ] ШТУРВАЛ</button>
+    
+    <div id="commandDeck">
+        <div class="lever-panel" style="--color:#0f0" data-action="medical" onclick="activateLever('medical')">
+            <div class="lever-indicator"></div>
+            <div class="lever-icon">🔬</div>
+            <div class="lever-name">МЕДИЦИНСКИЙ</div>
+            <div class="lever-desc">Поиск жизни, сканирование ДНК</div>
+            <div class="lever-bar"><div class="lever-bar-fill"></div></div>
+            <div class="lever-result"></div>
+        </div>
+        <div class="lever-panel" style="--color:#f80" data-action="engineer" onclick="activateLever('engineer')">
+            <div class="lever-indicator"></div>
+            <div class="lever-icon">🔧</div>
+            <div class="lever-name">ИНЖЕНЕРНЫЙ</div>
+            <div class="lever-desc">Ремонт, апгрейд модулей</div>
+            <div class="lever-bar"><div class="lever-bar-fill"></div></div>
+            <div class="lever-result"></div>
+        </div>
+        <div class="lever-panel" style="--color:#08f" data-action="scanner" onclick="activateLever('scanner')">
+            <div class="lever-indicator"></div>
+            <div class="lever-icon">📡</div>
+            <div class="lever-name">СКАНЕР</div>
+            <div class="lever-desc">Измерение расстояния, карта</div>
+            <div class="lever-bar"><div class="lever-bar-fill"></div></div>
+            <div class="lever-result"></div>
+        </div>
+        <div class="lever-panel" style="--color:#f0f" data-action="selfie" onclick="activateLever('selfie')">
+            <div class="lever-indicator"></div>
+            <div class="lever-icon">📸</div>
+            <div class="lever-name">СЕЛФИ</div>
+            <div class="lever-desc">Фото станции, +500 очков</div>
+            <div class="lever-bar"><div class="lever-bar-fill"></div></div>
+            <div class="lever-result"></div>
+        </div>
+        <div class="lever-panel" style="--color:#ff0" data-action="paint" onclick="activateLever('paint')">
+            <div class="lever-indicator"></div>
+            <div class="lever-icon">🎨</div>
+            <div class="lever-name">ПОКРАСКА</div>
+            <div class="lever-desc">Покраска объекта, смена цвета</div>
+            <div class="lever-bar"><div class="lever-bar-fill"></div></div>
+            <div class="lever-result"></div>
+        </div>
+    </div>
+    
+    <div class="bot-status" id="botStatus"></div>
     
     <div class="scanline"></div>
 
