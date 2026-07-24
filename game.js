@@ -1362,6 +1362,22 @@ function toggleCommandDeck() {
     }
 }
 
+// ===== ГОЛОГРАФИЧЕСКИЕ КНОПКИ ПИЛОТИРОВАНИЯ =====
+
+function pilotPress(btn) {
+    const key = btn.dataset.key;
+    if (!key) return;
+    keys[key] = true;
+    btn.classList.add('pressed');
+}
+
+function pilotRelease(btn) {
+    const key = btn.dataset.key;
+    if (!key) return;
+    keys[key] = false;
+    btn.classList.remove('pressed');
+}
+
 // ===== РАЗВЕДЫВАТЕЛЬНЫЙ ДАШБОРД =====
 
 let reconOpen = false;
