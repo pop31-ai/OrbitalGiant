@@ -762,22 +762,15 @@ function createHUD() {
     document.body.appendChild(shieldDiv);
 }
 
-// ===== ФИЗИКА СТОЛКНОВЕНИЙ (2D: ТОЧКА В ПОЛИГОНЕ + ПЕРЕСЕЧЕНИЕ ОТРЕЗКОВ) =====
-
-/*
-  Все тела проецируются на плоскость XZ (горизонт, Y=0).
-  Два метода:
-    1) Point-in-polygon (чётность луча): вершины фигуры B внутри фигуры A?
-    2) Edge-intersection: ребро A пересекает ребро B? (линейное уравнение)
-  Если хотя бы одно → столкновение.
-*/
+// ===== GJK + EPA COLLISION (AAA) =====
 
 function createCollisionBody(mesh, type = 'sphere', radius = 10, halfExtents = null) {
     const body = {
-        mesh: mesh, type, radius,
+        mesh, type, radius,
         halfExtents: halfExtents || new THREE.Vector3(10, 10, 10),
         velocity: new THREE.Vector3(0, 0, 0),
-        mass: 1, isStatic: false
+        mass: 1, isStatic: false,
+        vertices: null
     };
     collisionBodies.push(body);
     return body;
@@ -789,130 +782,230 @@ function getBodyCenter(body) {
     return c;
 }
 
-// === 3D → 2D (плоскость XZ) ===
-
-function to2D(pos) { return { x: pos.x, y: pos.z }; }
-
-function getVertices2D(body) {
+function getVertices(body) {
+    if (body.vertices) return body.vertices;
     const center = getBodyCenter(body);
+    const q = new THREE.Quaternion();
+    body.mesh.getWorldQuaternion(q);
 
     if (body.type === 'sphere') {
-        const v = [], n = 16;
+        const v = [], n = 12;
         for (let i = 0; i < n; i++) {
-            const a = (i / n) * Math.PI * 2;
-            v.push({ x: center.x + Math.cos(a) * body.radius, y: center.z + Math.sin(a) * body.radius });
+            const phi = Math.acos(-1 + (2 * i) / n);
+            const theta = Math.sqrt(n * Math.PI) * phi;
+            v.push(new THREE.Vector3(
+                body.radius * Math.cos(theta) * Math.sin(phi),
+                body.radius * Math.sin(theta) * Math.sin(phi),
+                body.radius * Math.cos(phi)
+            ).applyQuaternion(q).add(center));
         }
         return v;
     }
 
-    const q = new THREE.Quaternion();
-    body.mesh.getWorldQuaternion(q);
     const he = body.halfExtents;
     const corners = [
-        new THREE.Vector3(-he.x, 0, -he.z),
-        new THREE.Vector3( he.x, 0, -he.z),
-        new THREE.Vector3( he.x, 0,  he.z),
-        new THREE.Vector3(-he.x, 0,  he.z)
+        new THREE.Vector3(-he.x, -he.y, -he.z),
+        new THREE.Vector3( he.x, -he.y, -he.z),
+        new THREE.Vector3( he.x,  he.y, -he.z),
+        new THREE.Vector3(-he.x,  he.y, -he.z),
+        new THREE.Vector3(-he.x, -he.y,  he.z),
+        new THREE.Vector3( he.x, -he.y,  he.z),
+        new THREE.Vector3( he.x,  he.y,  he.z),
+        new THREE.Vector3(-he.x,  he.y,  he.z)
     ];
-    return corners.map(c => { c.applyQuaternion(q); return { x: c.x + center.x, y: c.z + center.z }; });
+    return corners.map(c => c.clone().applyQuaternion(q).add(center));
 }
 
-// === POINT-IN-POLYGON (чётность луча) ===
+// === SUPPORT FUNCTION (Minkowski difference A-B) ===
 
-function pointInPolygon(px, py, poly) {
-    let inside = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-        const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
-        if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi))
-            inside = !inside;
+function support(bodyA, verticesA, bodyB, verticesB, d) {
+    let maxA = -Infinity, bestA = 0;
+    for (let i = 0; i < verticesA.length; i++) {
+        const dot = verticesA[i].x * d.x + verticesA[i].y * d.y + verticesA[i].z * d.z;
+        if (dot > maxA) { maxA = dot; bestA = i; }
     }
-    return inside;
+    let maxB = -Infinity, bestB = 0;
+    for (let i = 0; i < verticesB.length; i++) {
+        const dot = -verticesB[i].x * d.x + -verticesB[i].y * d.y + -verticesB[i].z * d.z;
+        if (dot > maxB) { maxB = dot; bestB = i; }
+    }
+    return new THREE.Vector3().subVectors(verticesA[bestA], verticesB[bestB]);
 }
 
-function anyVertexInside(vertsA, vertsB) {
-    for (const v of vertsB) if (pointInPolygon(v.x, v.y, vertsA)) return true;
-    return false;
-}
+// === GJK ===
 
-// === ПЕРЕСЕЧЕНИЕ ОТРЕЗКОВ (решение линейной системы) ===
+function gjkIntersects(verticesA, verticesB) {
+    const d = new THREE.Vector3(1, 0, 0);
+    const simplex = [];
 
-function segIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
-    const ex = bx - ax, ey = by - ay;
-    const fx = dx - cx, fy = dy - cy;
-    const denom = ex * fy - ey * fx;
-    if (Math.abs(denom) < 1e-6) return false;
-    const px = cx - ax, py = cy - ay;
-    const t = (px * fy - py * fx) / denom;
-    const u = (px * ey - py * ex) / denom;
-    return t >= 0 && t <= 1 && u >= 0 && u <= 1;
-}
+    for (let iter = 0; iter < 64; iter++) {
+        const a = support(null, verticesA, null, verticesB, d);
+        simplex.unshift(a);
 
-function anyEdgeIntersection(vA, vB) {
-    for (let i = 0; i < vA.length; i++) {
-        const a1 = vA[i], a2 = vA[(i + 1) % vA.length];
-        for (let j = 0; j < vB.length; j++) {
-            const b1 = vB[j], b2 = vB[(j + 1) % vB.length];
-            if (segIntersect(a1.x, a1.y, a2.x, a2.y, b1.x, b1.y, b2.x, b2.y)) return true;
+        if (a.dot(d) < 0) return { hit: false };
+
+        d.negate();
+
+        if (simplex.length === 2) {
+            const ab = new THREE.Vector3().subVectors(simplex[1], simplex[0]);
+            d.set(-ab.y, ab.x, 0).normalize();
+            if (d.dot(simplex[0]) > 0) d.negate();
+        } else if (simplex.length === 3) {
+            const ab = new THREE.Vector3().subVectors(simplex[1], simplex[0]);
+            const ac = new THREE.Vector3().subVectors(simplex[2], simplex[0]);
+            const abc = new THREE.Vector3().crossVectors(ab, ac);
+            d.copy(abc);
+            if (d.dot(simplex[2]) < 0) d.negate();
+        } else if (simplex.length === 4) {
+            const ao = simplex[3].clone().negate();
+            const abc = new THREE.Vector3().crossVectors(
+                new THREE.Vector3().subVectors(simplex[1], simplex[2]),
+                new THREE.Vector3().subVectors(simplex[0], simplex[2])
+            );
+            const abd = new THREE.Vector3().crossVectors(
+                new THREE.Vector3().subVectors(simplex[1], simplex[3]),
+                new THREE.Vector3().subVectors(simplex[0], simplex[3])
+            );
+            const acd = new THREE.Vector3().crossVectors(
+                new THREE.Vector3().subVectors(simplex[2], simplex[3]),
+                new THREE.Vector3().subVectors(simplex[0], simplex[3])
+            );
+            const bcd = new THREE.Vector3().crossVectors(
+                new THREE.Vector3().subVectors(simplex[2], simplex[3]),
+                new THREE.Vector3().subVectors(simplex[1], simplex[3])
+            );
+
+            if (abc.dot(ao) > 0) {
+                simplex.splice(3, 1);
+                d.copy(abc);
+            } else if (abd.dot(ao) > 0) {
+                simplex.splice(2, 1);
+                d.copy(abd);
+            } else if (acd.dot(ao) > 0) {
+                simplex.splice(1, 1);
+                d.copy(acd);
+            } else if (bcd.dot(ao) > 0) {
+                simplex.splice(0, 1);
+                d.copy(bcd);
+            } else {
+                return { hit: true, simplex };
+            }
+            if (d.dot(simplex[simplex.length - 1]) < 0) d.negate();
         }
     }
-    return false;
+    return { hit: false };
 }
 
-// === РАССТОЯНИЕ ТОЧКА → ОТРЕЗОК ===
+// === EPA (Expanding Polytope Algorithm) ===
 
-function ptSegDist(p, a, b) {
-    const dx = b.x - a.x, dy = b.y - a.y;
-    const lenSq = dx * dx + dy * dy;
-    if (lenSq < 1e-6) return Math.hypot(p.x - a.x, p.y - a.y);
-    let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq;
-    t = Math.max(0, Math.min(1, t));
-    return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
-}
+function epa(verticesA, verticesB, gjkResult) {
+    const simplex = gjkResult.simplex;
+    if (simplex.length < 4) return null;
 
-function polyMinDist(pt, poly) {
-    let min = Infinity;
-    for (let i = 0; i < poly.length; i++) {
-        const d = ptSegDist(pt, poly[i], poly[(i + 1) % poly.length]);
-        if (d < min) min = d;
+    let faces = [];
+    const addFace = (i0, i1, i2) => {
+        const a = simplex[i0], b = simplex[i1], c = simplex[i2];
+        const ab = new THREE.Vector3().subVectors(b, a);
+        const ac = new THREE.Vector3().subVectors(c, a);
+        const normal = new THREE.Vector3().crossVectors(ab, ac).normalize();
+        if (normal.dot(a) < 0) { normal.negate(); }
+        const dist = Math.abs(normal.dot(a));
+        faces.push({ i0, i1, i2, normal, dist });
+    };
+
+    addFace(0, 1, 2);
+    addFace(0, 2, 3);
+    addFace(0, 3, 1);
+    addFace(1, 2, 3);
+
+    for (let iter = 0; iter < 128; iter++) {
+        let closestFace = 0;
+        for (let i = 1; i < faces.length; i++) {
+            if (faces[i].dist < faces[closestFace].dist) closestFace = i;
+        }
+
+        const f = faces[closestFace];
+        const d = f.normal.clone();
+
+        const p = support(null, verticesA, null, verticesB, d);
+
+        if (Math.abs(p.dot(d) - f.dist) < 0.0001) {
+            const penetration = f.dist;
+            const normal = f.normal;
+            const pointOnA = p.clone().add(verticesB[0]);
+            return { normal, depth: penetration, point: pointOnA };
+        }
+
+        const uniqueEdges = [];
+        const removeFaces = [];
+
+        for (let i = 0; i < faces.length; i++) {
+            if (faces[i].normal.dot(new THREE.Vector3().subVectors(p, simplex[faces[i].i0])) > 0) {
+                removeFaces.push(i);
+            }
+        }
+
+        const edgePool = [];
+        for (const idx of removeFaces) {
+            const face = faces[idx];
+            edgePool.push([face.i0, face.i1]);
+            edgePool.push([face.i1, face.i2]);
+            edgePool.push([face.i2, face.i0]);
+        }
+
+        for (let i = 0; i < edgePool.length; i++) {
+            let shared = false;
+            for (let j = 0; j < edgePool.length; j++) {
+                if (i !== j && edgePool[i][0] === edgePool[j][1] && edgePool[i][1] === edgePool[j][0]) {
+                    shared = true;
+                    break;
+                }
+            }
+            if (!shared) uniqueEdges.push(edgePool[i]);
+        }
+
+        for (let i = removeFaces.length - 1; i >= 0; i--) {
+            faces.splice(removeFaces[i], 1);
+        }
+
+        const newIdx = simplex.length;
+        simplex.push(p);
+
+        for (const edge of uniqueEdges) {
+            const a = simplex[edge[0]], b = simplex[edge[1]];
+            const ab = new THREE.Vector3().subVectors(b, a);
+            const ap = new THREE.Vector3().subVectors(p, a);
+            const normal = new THREE.Vector3().crossVectors(ab, ap).normalize();
+            const dist = Math.abs(normal.dot(a));
+            faces.push({ i0: edge[0], i1: edge[1], i2: newIdx, normal, dist });
+        }
     }
-    return min;
+
+    return null;
 }
 
-// === ГЛАВНЫЙ ТЕСТ ===
+// === MAIN TEST ===
 
 function testCollision(a, b) {
     const cA = getBodyCenter(a), cB = getBodyCenter(b);
-    if (cA.distanceTo(cB) > (a.radius + b.radius) * 2) return { collided: false };
+    const d = cA.distanceTo(cB);
+    if (d > (a.radius + b.radius) * 2) return { collided: false };
 
-    const vA = getVertices2D(a), vB = getVertices2D(b);
+    const vA = getVertices(a), vB = getVertices(b);
 
-    const insideAB = anyVertexInside(vA, vB);
-    const insideBA = anyVertexInside(vB, vA);
-    const edges = anyEdgeIntersection(vA, vB);
+    const gjkResult = gjkIntersects(vA, vB);
+    if (!gjkResult.hit) return { collided: false };
 
-    if (!insideAB && !insideBA && !edges) return { collided: false };
+    const epaResult = epa(vA, vB, gjkResult);
+    if (!epaResult || epaResult.depth < 0.01) return { collided: false };
 
-    const dx = cB.x - cA.x, dz = cB.z - cA.z;
-    const len = Math.sqrt(dx * dx + dz * dz) || 1;
-    const normal = new THREE.Vector3(dx / len, 0, dz / len);
-
-    let penetration = (a.radius + b.radius - cA.distanceTo(cB)) * 0.5;
-    if (insideAB) {
-        let min = Infinity;
-        for (const v of vB) { const d = polyMinDist(v, vA); if (d < min) min = d; }
-        penetration = min;
-    } else if (insideBA) {
-        let min = Infinity;
-        for (const v of vA) { const d = polyMinDist(v, vB); if (d < min) min = d; }
-        penetration = min;
-        normal.negate();
-    }
-    if (penetration < 0.1) penetration = 0.1;
-
-    return { collided: true, normal, point: cA.clone().add(normal.clone().multiplyScalar(a.radius)), penetration };
+    return {
+        collided: true,
+        normal: epaResult.normal,
+        point: epaResult.point,
+        penetration: epaResult.depth
+    };
 }
-
-// === РАЗРЕШЕНИЕ ===
 
 function resolveCollision(a, b, collision) {
     const { normal, penetration } = collision;
