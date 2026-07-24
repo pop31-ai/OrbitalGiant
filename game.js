@@ -984,6 +984,12 @@ function epa(verticesA, verticesB, gjkResult) {
     return null;
 }
 
+function getBoundingRadius(body) {
+    if (body.type === 'sphere') return body.radius;
+    const he = body.halfExtents;
+    return Math.sqrt(he.x * he.x + he.y * he.y + he.z * he.z);
+}
+
 // ===== BVH TREE (Bounding Volume Hierarchy) =====
 
 /*
@@ -1005,7 +1011,7 @@ class BVHNode {
         // Вычисляем общий AABB
         for (const b of bodies) {
             const c = getBodyCenter(b);
-            const r = b.radius * 1.5;
+            const r = getBoundingRadius(b) * 1.1;
             this.aabbMin.min(c.clone().sub(new THREE.Vector3(r, r, r)));
             this.aabbMax.max(c.clone().add(new THREE.Vector3(r, r, r)));
         }
@@ -1075,8 +1081,9 @@ function queryBVH(nodeA, nodeB, pairs) {
 
 function testCollision(a, b) {
     const cA = getBodyCenter(a), cB = getBodyCenter(b);
-    const d = cA.distanceTo(cB);
-    if (d > (a.radius + b.radius) * 2) return { collided: false };
+    const rA = getBoundingRadius(a);
+    const rB = getBoundingRadius(b);
+    if (cA.distanceTo(cB) > rA + rB + 1) return { collided: false };
 
     const vA = getVertices(a), vB = getVertices(b);
 
