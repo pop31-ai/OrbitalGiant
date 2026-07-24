@@ -1374,7 +1374,7 @@ function setupControls() {
         }
         if (e.code === 'Tab') {
             e.preventDefault();
-            if (isDocked) toggleCommandDeck();
+            toggleCommandDeck();
         }
     });
     
@@ -1415,6 +1415,7 @@ function startGame() {
     currentLevel = 1;
     createLevel(currentLevel);
     updateHUD();
+    document.getElementById('commandToggle').classList.add('visible');
 }
 
 // Переключение щита
@@ -1467,7 +1468,6 @@ function toggleDocking() {
         updateStatus('ОТСТЫКОВКА');
         // Закрыть штурвал
         if (commandDeckOpen) toggleCommandDeck();
-        document.getElementById('commandToggle').classList.remove('visible');
         return;
     }
     
@@ -1698,7 +1698,6 @@ function clearLevel() {
     dockProgress = 0;
     if (commandDeckOpen) toggleCommandDeck();
     activeBots = [];
-    document.getElementById('commandToggle').classList.remove('visible');
     document.getElementById('botStatus').classList.remove('active');
 }
 
