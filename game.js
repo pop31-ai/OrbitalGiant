@@ -1208,13 +1208,14 @@ const LEVER_ACTIONS = {
         duration: 3000,
         execute: (bot) => {
             const dist = landingPad ? Math.floor(player.position.distanceTo(landingPad.position)) : '???';
+            setTimeout(() => openReconDashboard(), 1500);
             const readings = [
                 `ДО ПЛОЩАДКИ: ${dist}м`,
                 `ОБЪЕКТОВ ПОБЛИЗОСТИ: ${emergencyObjects.length}`,
                 `СТАНЦИЯ: ${(stations[0]?.position.length() || 0).toFixed(0)}м`,
                 `ТЕМПЕРАТУРА: ${(Math.random() * 40 - 20).toFixed(1)}°C`,
                 `РАДИАЦИЯ: ${(Math.random() * 5).toFixed(2)} мЗв/ч`,
-                `КАРТА: ${Math.floor(Math.random()*360)}° от центра`
+                `РАЗВЕДКА: ДРОН ЗАПУЩЕН → КАРТА ГОТОВА`
             ];
             return readings[Math.floor(Math.random() * readings.length)];
         }
@@ -1355,6 +1356,265 @@ function toggleCommandDeck() {
         toggle.textContent = '[ TAB ] ШТУРВАЛ';
         document.body.style.cursor = 'none';
     }
+}
+
+// ===== РАЗВЕДЫВАТЕЛЬНЫЙ ДАШБОРД =====
+
+let reconOpen = false;
+let reconZoom = 1.0;
+let reconPanX = 0, reconPanY = 0;
+let reconDragging = false;
+let reconDragStart = { x: 0, y: 0 };
+let reconAnimFrame = null;
+
+function openReconDashboard() {
+    const dash = document.getElementById('reconDashboard');
+    dash.classList.add('active');
+    reconOpen = true;
+    reconZoom = 1.0;
+    reconPanX = 0;
+    reconPanY = 0;
+    document.getElementById('reconZoomLevel').textContent = '100';
+    buildReconObjectList();
+    startReconRender();
+}
+
+function closeReconDashboard() {
+    document.getElementById('reconDashboard').classList.remove('active');
+    reconOpen = false;
+    if (reconAnimFrame) cancelAnimationFrame(reconAnimFrame);
+}
+
+function buildReconObjectList() {
+    const list = document.getElementById('reconObjList');
+    const items = [];
+
+    if (player) {
+        items.push({ name: 'КОРАБЛЬ', color: '#0f0', dist: '0м' });
+    }
+
+    stations.forEach((s, i) => {
+        const d = player ? Math.floor(player.position.distanceTo(s.position)) : '???';
+        items.push({ name: `СТАНЦИЯ ${(s.userData.config?.name || String.fromCharCode(65 + i)).toUpperCase()}`, color: '#ff0', dist: d + 'м' });
+    });
+
+    if (landingPad) {
+        const d = player ? Math.floor(player.position.distanceTo(landingPad.position)) : '???';
+        items.push({ name: 'ПОСАДОЧНАЯ ПЛОЩАДКА', color: '#08f', dist: d + 'м' });
+    }
+
+    emergencyObjects.forEach((obj, i) => {
+        const d = player ? Math.floor(player.position.distanceTo(obj.position)) : '???';
+        const t = obj.userData.type === 'asteroid' ? 'АСТЕРОИД' : 'ОБЛОМОК';
+        const sz = obj.userData.radius ? obj.userData.radius.toFixed(0) + 'м' : '';
+        items.push({ name: `${t} ${i + 1}`, color: obj.userData.type === 'asteroid' ? '#f44' : '#f80', dist: d + 'м', size: sz });
+    });
+
+    list.innerHTML = items.map(it => `
+        <div class="recon-obj">
+            <div class="dot" style="background:${it.color};box-shadow:0 0 4px ${it.color}"></div>
+            <span class="label">${it.name}</span>
+            <span class="dist">${it.dist}</span>
+        </div>
+    `).join('');
+}
+
+function startReconRender() {
+    const canvas = document.getElementById('reconCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const rect = canvas.parentElement.getBoundingClientRect();
+    canvas.width = rect.width - 160;
+    canvas.height = rect.height - 40;
+
+    canvas.onmousedown = (e) => {
+        reconDragging = true;
+        reconDragStart = { x: e.clientX - reconPanX, y: e.clientY - reconPanY };
+    };
+    canvas.onmousemove = (e) => {
+        if (!reconDragging) return;
+        reconPanX = e.clientX - reconDragStart.x;
+        reconPanY = e.clientY - reconDragStart.y;
+    };
+    canvas.onmouseup = () => { reconDragging = false; };
+    canvas.onmouseleave = () => { reconDragging = false; };
+    canvas.onwheel = (e) => {
+        e.preventDefault();
+        const zoomDelta = e.deltaY > 0 ? 0.9 : 1.1;
+        reconZoom = Math.max(0.2, Math.min(5.0, reconZoom * zoomDelta));
+        document.getElementById('reconZoomLevel').textContent = Math.round(reconZoom * 100);
+    };
+
+    function renderFrame() {
+        if (!reconOpen) return;
+        reconAnimFrame = requestAnimationFrame(renderFrame);
+
+        const W = canvas.width, H = canvas.height;
+        const cx = W / 2 + reconPanX;
+        const cy = H / 2 + reconPanY;
+        const scale = 0.15 * reconZoom;
+
+        ctx.fillStyle = '#000810';
+        ctx.fillRect(0, 0, W, H);
+
+        // Сетка
+        const gridSize = 50;
+        ctx.strokeStyle = 'rgba(0,100,200,0.12)';
+        ctx.lineWidth = 0.5;
+        for (let gx = -600; gx <= 600; gx += gridSize) {
+            const sx = cx + gx * scale;
+            if (sx < 0 || sx > W) continue;
+            ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, H); ctx.stroke();
+        }
+        for (let gy = -600; gy <= 600; gy += gridSize) {
+            const sy = cy + gy * scale;
+            if (sy < 0 || sy > H) continue;
+            ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(W, sy); ctx.stroke();
+        }
+
+        // Оси
+        ctx.strokeStyle = 'rgba(0,136,255,0.25)';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+
+        // Фоновые звёзды (декоративные)
+        if (!renderFrame._stars) {
+            renderFrame._stars = [];
+            for (let i = 0; i < 60; i++) {
+                renderFrame._stars.push({ x: Math.random() * 2000 - 1000, y: Math.random() * 2000 - 1000, a: Math.random() * 0.3 + 0.05 });
+            }
+        }
+        renderFrame._stars.forEach(s => {
+            const sx2 = cx + s.x * scale * 0.3, sy2 = cy + s.y * scale * 0.3;
+            if (sx2 >= 0 && sx2 <= W && sy2 >= 0 && sy2 <= H) {
+                ctx.fillStyle = `rgba(100,150,255,${s.a})`;
+                ctx.fillRect(sx2, sy2, 1, 1);
+            }
+        });
+
+        function worldToScreen(pos) {
+            return { x: cx + pos.x * scale, y: cy + pos.z * scale };
+        }
+
+        function drawDot(pos, radius, color, label, glow) {
+            const p = worldToScreen(pos);
+            if (p.x < -20 || p.x > W + 20 || p.y < -20 || p.y > H + 20) return;
+
+            if (glow) {
+                const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius * 3);
+                grad.addColorStop(0, color);
+                grad.addColorStop(1, 'transparent');
+                ctx.fillStyle = grad;
+                ctx.beginPath(); ctx.arc(p.x, p.y, radius * 3, 0, Math.PI * 2); ctx.fill();
+            }
+
+            ctx.fillStyle = color;
+            ctx.beginPath(); ctx.arc(p.x, p.y, radius, 0, Math.PI * 2); ctx.fill();
+
+            if (label) {
+                ctx.fillStyle = color;
+                ctx.font = '9px Courier New';
+                ctx.fillText(label, p.x + radius + 3, p.y - radius - 2);
+            }
+        }
+
+        // Платформа
+        if (landingPad) {
+            drawDot(landingPad.position, 6, '#08f', 'ПЛОЩАДКА', true);
+            // Магнитное поле
+            ctx.strokeStyle = 'rgba(0,136,255,0.2)';
+            ctx.lineWidth = 0.5;
+            const pp = worldToScreen(landingPad.position);
+            ctx.beginPath(); ctx.arc(pp.x, pp.y, 30 * scale, 0, Math.PI * 2); ctx.stroke();
+            ctx.beginPath(); ctx.arc(pp.x, pp.y, 45 * scale, 0, Math.PI * 2); ctx.stroke();
+        }
+
+        // Станции
+        stations.forEach((s, i) => {
+            const c = s.userData.config;
+            const color = c ? '#' + c.color.toString(16).padStart(6, '0') : '#ff0';
+            drawDot(s.position, 10, color, (c?.name || 'S' + i).toUpperCase(), true);
+
+            // Модули станции
+            s.children.forEach(child => {
+                if (child.geometry && child.geometry.type === 'BoxGeometry') {
+                    const childWorld = new THREE.Vector3();
+                    child.getWorldPosition(childWorld);
+                    drawDot(childWorld, 3, color, '', false);
+                }
+            });
+        });
+
+        // Аварийные объекты
+        emergencyObjects.forEach((obj, i) => {
+            const isAst = obj.userData.type === 'asteroid';
+            const color = isAst ? '#f44' : '#f80';
+            const r = obj.userData.radius || 5;
+            drawDot(obj.position, Math.max(3, r * 0.3), color, isAst ? `АСТ ${i + 1}` : `ОБЛ ${i + 1}`, false);
+
+            // Радиус опасности
+            const pp2 = worldToScreen(obj.position);
+            ctx.strokeStyle = isAst ? 'rgba(255,60,60,0.15)' : 'rgba(255,130,0,0.1)';
+            ctx.lineWidth = 0.5;
+            ctx.beginPath(); ctx.arc(pp2.x, pp2.y, r * scale, 0, Math.PI * 2); ctx.stroke();
+        });
+
+        // Игрок
+        if (player) {
+            const pp = worldToScreen(player.position);
+            // Треугольник направления
+            const angle = player.rotation.y;
+            ctx.save();
+            ctx.translate(pp.x, pp.y);
+            ctx.rotate(-angle);
+            ctx.fillStyle = '#0f0';
+            ctx.beginPath();
+            ctx.moveTo(0, -8);
+            ctx.lineTo(-5, 6);
+            ctx.lineTo(5, 6);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+
+            // Линия направления
+            ctx.strokeStyle = 'rgba(0,255,0,0.3)';
+            ctx.lineWidth = 0.5;
+            ctx.beginPath();
+            ctx.moveTo(pp.x, pp.y);
+            ctx.lineTo(pp.x + Math.sin(angle) * -40, pp.y + Math.cos(angle) * -40);
+            ctx.stroke();
+        }
+
+        // Линии связи (игрок → ближайшие объекты)
+        if (player) {
+            const allObjs = [...stations, landingPad, ...emergencyObjects].filter(Boolean);
+            allObjs.sort((a, b) => player.position.distanceTo(a.position) - player.position.distanceTo(b.position));
+            allObjs.slice(0, 3).forEach(obj => {
+                const pa = worldToScreen(player.position);
+                const pb = worldToScreen(obj.position);
+                ctx.strokeStyle = 'rgba(0,136,255,0.2)';
+                ctx.setLineDash([4, 4]);
+                ctx.lineWidth = 0.5;
+                ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
+                ctx.setLineDash([]);
+            });
+        }
+
+        // Рамка
+        ctx.strokeStyle = '#08f';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(0, 0, W, H);
+
+        // Координаты
+        if (player) {
+            ctx.fillStyle = 'rgba(0,136,255,0.7)';
+            ctx.font = '10px Courier New';
+            ctx.fillText(`X:${player.position.x.toFixed(0)} Z:${player.position.z.toFixed(0)} Y:${player.position.y.toFixed(0)}`, 8, H - 8);
+        }
+    }
+
+    renderFrame();
 }
 
 

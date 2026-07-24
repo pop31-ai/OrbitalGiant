@@ -335,6 +335,109 @@
             padding-top: 5px;
         }
         #commandDeck.retracted .lever-panel { display: none; }
+
+        /* РАЗВЕДЫВАТЕЛЬНЫЙ ДАШБОРД */
+        #reconDashboard {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 520px;
+            height: 440px;
+            background: rgba(0,8,16,0.95);
+            border: 1px solid #08f;
+            border-radius: 8px;
+            z-index: 300;
+            pointer-events: all;
+            display: none;
+            flex-direction: column;
+            box-shadow: 0 0 40px rgba(0,136,255,0.3), inset 0 0 60px rgba(0,136,255,0.05);
+        }
+        #reconDashboard.active { display: flex; }
+        .recon-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 14px;
+            border-bottom: 1px solid rgba(0,136,255,0.3);
+            font-size: 11px;
+            color: #08f;
+        }
+        .recon-header .title {
+            font-weight: bold;
+            letter-spacing: 2px;
+            text-shadow: 0 0 10px #08f;
+        }
+        .recon-header .close-btn {
+            cursor: pointer;
+            padding: 2px 8px;
+            border: 1px solid #08f;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 10px;
+            background: transparent;
+            color: #08f;
+        }
+        .recon-header .close-btn:hover {
+            background: #08f;
+            color: #000;
+        }
+        .recon-body {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        #reconCanvas {
+            flex: 1;
+            cursor: grab;
+        }
+        #reconCanvas:active { cursor: grabbing; }
+        .recon-sidebar {
+            width: 160px;
+            border-left: 1px solid rgba(0,136,255,0.3);
+            padding: 8px;
+            overflow-y: auto;
+            font-size: 10px;
+        }
+        .recon-sidebar h4 {
+            color: #08f;
+            font-size: 10px;
+            margin-bottom: 6px;
+            letter-spacing: 1px;
+            text-shadow: 0 0 8px #08f;
+        }
+        .recon-obj {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 0;
+            border-bottom: 1px solid rgba(0,136,255,0.1);
+            color: #8af;
+        }
+        .recon-obj .dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .recon-obj .label {
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .recon-obj .dist {
+            color: #08f;
+            font-size: 9px;
+        }
+        .recon-zoom {
+            padding: 6px 14px;
+            border-top: 1px solid rgba(0,136,255,0.3);
+            font-size: 10px;
+            color: #08f;
+            display: flex;
+            justify-content: space-between;
+        }
     </style>
 </head>
 <body>
@@ -415,6 +518,24 @@
     </div>
     
     <div class="bot-status" id="botStatus"></div>
+    
+    <div id="reconDashboard">
+        <div class="recon-header">
+            <span class="title">РАЗВЕДКА // ОБЗОР СЕКТОРА</span>
+            <button class="close-btn" onclick="closeReconDashboard()">✕ ЗАКРЫТЬ</button>
+        </div>
+        <div class="recon-body">
+            <canvas id="reconCanvas"></canvas>
+            <div class="recon-sidebar" id="reconSidebar">
+                <h4>ОБЪЕКТЫ СЕКТОРА</h4>
+                <div id="reconObjList"></div>
+            </div>
+        </div>
+        <div class="recon-zoom">
+            <span>ЗУМ: <span id="reconZoomLevel">100</span>%</span>
+            <span>колесо мыши для масштаба | перетаскивание для панорамы</span>
+        </div>
+    </div>
     
     <div class="scanline"></div>
 
